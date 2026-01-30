@@ -44,7 +44,7 @@ Edit `appsettings.json` to configure screens:
 - **MonitorIndex**: Monitor number (0-based)
 - **Url**: Initial URL to load
 - **AllowExit**: Show exit button when navigating to ExitUrl
-- **ExitUrl**: URL that triggers the exit button
+- **ExitUrl**: URL that triggers the exit button visibility
 - **LogConsoleMessages**: Log browser console messages to log4net
 - **DevTools**: Open DevTools window on startup
 - **LocalStorage**: Key/value pairs to inject into browser localStorage
