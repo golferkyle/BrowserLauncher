@@ -22,7 +22,6 @@ var log = LogManager.GetLogger(typeof(Program));
 // Read the JSON file directly to preserve localStorage structure
 var appSettingsPath = Path.Combine(launcherBase, "appsettings.json");
 var jsonText = File.ReadAllText(appSettingsPath);
-log.Debug($"Read appsettings.json: {jsonText.Length} chars");
 var jsonDoc = System.Text.Json.JsonDocument.Parse(jsonText);
 
 var config = new ConfigurationBuilder()
@@ -32,7 +31,13 @@ var config = new ConfigurationBuilder()
 var screens = config.GetSection("Screens").Get<List<ScreenConfig>>()!;
 int delay = config.GetValue<int>("RestartDelaySeconds");
 
-string browserHostPath = Path.Combine(launcherBase, "BrowserHost", "BrowserHost.exe");
+var browserHostPath = ResolveBrowserHostPath(launcherBase, config);
+if (string.IsNullOrWhiteSpace(browserHostPath) || !File.Exists(browserHostPath))
+{
+    log.Error("BrowserHost.exe could not be located. Set BrowserHostPath in appsettings.json or deploy BrowserHost next to Launcher.");
+    Environment.Exit(1);
+}
+
 string browserHostDir = Path.GetDirectoryName(browserHostPath)!;
 
 log.Info($"Config loaded: {screens.Count} screens, delay: {delay}s");
@@ -52,7 +57,6 @@ foreach (var screen in screens)
         if (localStorageText != "{}")
         {
             localStorageJson = localStorageText;
-            log.Debug($"Monitor {screen.MonitorIndex} localStorage JSON: {localStorageJson}");
         }
     }
     screenIndex++;
@@ -91,7 +95,6 @@ static async Task RunBrowser(ScreenConfig cfg, int delay, string exePath, string
         };
 
         process.Start();
-        log.Debug($"Process started, PID: {process.Id}");
         await process.WaitForExitAsync();
         log.Info($"Process exited with code {process.ExitCode}, restarting in {delay}s");
         if (process.ExitCode == 0)
@@ -105,6 +108,49 @@ static async Task RunBrowser(ScreenConfig cfg, int delay, string exePath, string
         }
         await Task.Delay(TimeSpan.FromSeconds(delay));
     }
+}
+
+static string ResolveBrowserHostPath(string launcherBase, IConfiguration config)
+{
+    var configuredPath = config["BrowserHostPath"];
+    if (!string.IsNullOrWhiteSpace(configuredPath))
+    {
+        var expanded = Environment.ExpandEnvironmentVariables(configuredPath);
+        if (Path.IsPathRooted(expanded))
+        {
+            if (File.Exists(expanded))
+            {
+                return expanded;
+            }
+        }
+        else
+        {
+            var relativeToBase = Path.GetFullPath(Path.Combine(launcherBase, expanded));
+            if (File.Exists(relativeToBase))
+            {
+                return relativeToBase;
+            }
+        }
+    }
+
+    var candidates = new List<string>
+    {
+        Path.Combine(launcherBase, "BrowserHost", "BrowserHost.exe"),
+        Path.Combine(launcherBase, "BrowserHost.exe"),
+        Path.GetFullPath(Path.Combine(launcherBase, "..", "..", "..", "..", "BrowserHost", "bin", "Debug", "net8.0-windows", "BrowserHost.exe")),
+        Path.GetFullPath(Path.Combine(launcherBase, "..", "..", "..", "..", "BrowserHost", "bin", "Release", "net8.0-windows", "BrowserHost.exe")),
+        Path.GetFullPath(Path.Combine(launcherBase, "..", "..", "..", "..", "BrowserHost", "bin", "Release", "net8.0-windows", "publish", "BrowserHost.exe"))
+    };
+
+    foreach (var candidate in candidates)
+    {
+        if (File.Exists(candidate))
+        {
+            return candidate;
+        }
+    }
+
+    return string.Empty;
 }
 
 record ScreenConfig(int MonitorIndex, string Url, bool AllowExit, string ExitUrl, bool LogConsoleMessages, bool DevTools);

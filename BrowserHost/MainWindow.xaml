@@ -10,6 +10,7 @@
 
     <Grid>
         <wv2:WebView2 x:Name="WebView"/>
+
         <Popup x:Name="ExitPopup" IsOpen="False" Placement="Absolute" HorizontalOffset="10" VerticalOffset="1030">
             <Button Click="ExitButton_Click"
                     Background="#D32F2F"
