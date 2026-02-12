@@ -25,4 +25,10 @@
     <Content Include="app.ico" />
   </ItemGroup>
 
+  <Target Name="PublishBrowserHostIntoLauncher" AfterTargets="Publish">
+    <Exec
+      Command="dotnet publish &quot;$(MSBuildProjectDirectory)\..\BrowserHost\BrowserHost.csproj&quot; -c $(Configuration) -o &quot;$(PublishDir)BrowserHost&quot;"
+      WorkingDirectory="$(MSBuildProjectDirectory)" />
+  </Target>
+
 </Project>
