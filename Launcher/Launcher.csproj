@@ -5,7 +5,10 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <ApplicationIcon>app.ico</ApplicationIcon>
+    <ApplicationIcon>BrowserLauncher.ico</ApplicationIcon>
+    <Version>1.0.1</Version>
+    <FileVersion>1.0.1.0</FileVersion>
+    <AssemblyVersion>1.0.1.0</AssemblyVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -22,7 +25,7 @@
     <None Update="log4net.config">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <Content Include="app.ico" />
+    <Content Include="BrowserLauncher.ico" />
   </ItemGroup>
 
   <Target Name="PublishBrowserHostIntoLauncher" AfterTargets="Publish">
