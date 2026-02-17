@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="BrowserHost/BrowserLauncherIcon.png" alt="BrowserLauncher" width="128" />
+  <img src="BrowserHost/BrowserLauncherIcon.png" alt="BrowserLauncher" width="256" />
 </p>
 
 # BrowserLauncher
