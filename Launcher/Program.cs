@@ -30,6 +30,8 @@ var config = new ConfigurationBuilder()
 
 var screens = config.GetSection("Screens").Get<List<ScreenConfig>>()!;
 int delay = config.GetValue<int>("RestartDelaySeconds");
+int logCleanupDays = config.GetValue<int?>("LogCleanupDays") ?? 10;
+string logDirectory = config.GetValue<string>("LogDirectory") ?? "C:\\Temp\\BroswerHost";
 
 var browserHostPath = ResolveBrowserHostPath(launcherBase, config);
 if (string.IsNullOrWhiteSpace(browserHostPath) || !File.Exists(browserHostPath))
@@ -73,6 +75,9 @@ foreach (var screen in screens)
         }
     });
 }
+
+// Run log cleanup after launch tasks are kicked off to avoid slowing startup.
+Task.Run(() => CleanupLogs(logDirectory, logCleanupDays, log));
 
 await Task.Delay(Timeout.Infinite);
 
@@ -151,6 +156,49 @@ static string ResolveBrowserHostPath(string launcherBase, IConfiguration config)
     }
 
     return string.Empty;
+}
+
+static void CleanupLogs(string logDirectory, int retentionDays, ILog log)
+{
+    try
+    {
+        if (retentionDays <= 0)
+        {
+            return;
+        }
+
+        var expandedDir = Environment.ExpandEnvironmentVariables(logDirectory);
+        if (!Directory.Exists(expandedDir))
+        {
+            return;
+        }
+
+        var cutoff = DateTime.Now.AddDays(-retentionDays);
+        var patterns = new[] { "launcher.log*", "browserhost-*.log*" };
+
+        foreach (var pattern in patterns)
+        {
+            foreach (var file in Directory.GetFiles(expandedDir, pattern))
+            {
+                try
+                {
+                    var info = new FileInfo(file);
+                    if (info.LastWriteTime < cutoff)
+                    {
+                        info.Delete();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    log.Warn($"Failed to delete log file '{file}': {ex.Message}");
+                }
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        log.Warn($"Log cleanup failed: {ex.Message}");
+    }
 }
 
 record ScreenConfig(int MonitorIndex, string Url, bool AllowExit, string ExitUrl, bool LogConsoleMessages, bool DevTools);

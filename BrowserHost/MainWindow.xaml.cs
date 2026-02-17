@@ -113,10 +113,6 @@ namespace BrowserHost
                 Width = screen.Bounds.Width;
                 Height = screen.Bounds.Height;
 
-                // Position popup at bottom left of this window
-                ExitPopup.HorizontalOffset = Left + 10;
-                ExitPopup.VerticalOffset = Top + Height - 50;
-
                 log.Info("Ensuring WebView2");
                 try
                 {
@@ -135,6 +131,7 @@ namespace BrowserHost
                 WebView.CoreWebView2.NavigationStarting += WebView_NavigationStarting;
                 WebView.CoreWebView2.NavigationCompleted += WebView_NavigationCompleted;
                 WebView.SourceChanged += WebView_SourceChanged;
+                WebView.GotFocus += WebView_GotFocus;
 
                 // Always listen for web messages so injected pull-to-refresh can request a reload
                 WebView.CoreWebView2.WebMessageReceived += WebView_WebMessageReceived;
@@ -509,9 +506,24 @@ namespace BrowserHost
             UpdateExitPopup(currentUrl);
         }
 
+        private void WebView_GotFocus(object sender, RoutedEventArgs e)
+        {
+            // Reassert exit popup visibility when WebView2 focus changes.
+            var currentUrl = WebView?.CoreWebView2?.Source ?? WebView.Source?.ToString() ?? string.Empty;
+            UpdateExitPopup(currentUrl);
+        }
+
         private void UpdateExitPopup(string? currentUrl)
         {
             var url = currentUrl ?? string.Empty;
+
+            // On initial load/focus transitions WebView can report empty or transient values.
+            // Ignore those states so we don't hide the Exit button incorrectly.
+            if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url, UriKind.Absolute, out _))
+            {
+                return;
+            }
+
             bool show = allowExit && UrlMatchesExit(url, exitUrl);
             ExitPopup.IsOpen = show;
         }

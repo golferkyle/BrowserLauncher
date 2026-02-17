@@ -8,11 +8,22 @@
         Topmost="True"
         Background="Black">
 
-    <Grid>
+    <Grid x:Name="RootGrid">
         <wv2:WebView2 x:Name="WebView"/>
 
-        <Popup x:Name="ExitPopup" IsOpen="False" Placement="Absolute" HorizontalOffset="10" VerticalOffset="1030">
+        <Popup x:Name="ExitPopup"
+               IsOpen="False"
+               StaysOpen="True"
+                             AllowsTransparency="True"
+                             PopupAnimation="None"
+                             Focusable="False"
+               Placement="Bottom"
+               PlacementTarget="{Binding ElementName=RootGrid}"
+               HorizontalOffset="10"
+                             VerticalOffset="-55">
             <Button Click="ExitButton_Click"
+                                        Focusable="False"
+                                        IsTabStop="False"
                     Background="#D32F2F"
                     Foreground="White"
                     FontFamily="Segoe UI"
