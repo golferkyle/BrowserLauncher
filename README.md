@@ -1,4 +1,8 @@
-# BrowserHost
+<p align="center">
+  <img src="BrowserHost/BrowserLauncherIcon.png" alt="BrowserLauncher" width="128" />
+</p>
+
+# BrowserLauncher
 
 A .NET application for managing multiple browser instances across monitors with WebView2. The Launcher spawns and monitors BrowserHost instances on configured screens.
 
@@ -11,6 +15,23 @@ A .NET application for managing multiple browser instances across monitors with 
 - localStorage injection for web applications
 - Optional DevTools window
 - Configurable exit buttons
+- Pull-to-refresh gesture with confirmation dialog (`Refresh`, `Cancel`, `Home`)
+- Page navigation controls for quick return to configured home URL
+- Touch-first on-screen keyboard launch for editable fields
+
+## Demo
+
+### Pull-to-Refresh (add GIF)
+
+![Pull-to-Refresh Demo](docs/gifs/pull-to-refresh.gif)
+
+### Page Navigation / Home Flow (add GIF)
+
+![Page Navigation Demo](docs/gifs/page-navigation-home.gif)
+
+### On-Screen Keyboard on Touch Input (add GIF)
+
+![On-Screen Keyboard Demo](docs/gifs/onscreen-keyboard.gif)
 
 ## Requirements
 
@@ -48,6 +69,8 @@ Edit `appsettings.json` to configure screens:
 - **LogConsoleMessages**: Log browser console messages to log4net
 - **DevTools**: Open DevTools window on startup
 - **LocalStorage**: Key/value pairs to inject into browser localStorage
+- **LogCleanupDays**: Number of days to retain launcher/browser logs before cleanup (default `10`)
+- **LogDirectory**: Directory where logs are stored and cleaned up (default `C:\Temp\BroswerHost`)
 
 ## Running
 
