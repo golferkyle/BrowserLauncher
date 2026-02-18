@@ -21,8 +21,6 @@ A .NET application for managing multiple browser instances across monitors with 
 
 ## Demo
 
-### Pull-to-Refresh (add GIF)
-
 ![Pull-to-Refresh Demo](docs/gifs/pull-to-refresh.gif)
 
 ### Page Navigation / Home Flow
