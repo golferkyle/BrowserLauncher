@@ -25,13 +25,13 @@ A .NET application for managing multiple browser instances across monitors with 
 
 ![Pull-to-Refresh Demo](docs/gifs/pull-to-refresh.gif)
 
-### Page Navigation / Home Flow (add GIF)
+### Page Navigation / Home Flow
 
-![Page Navigation Demo](docs/gifs/page-navigation-home.gif)
+![Page Navigation Demo](BrowserHost/swipe_navigation_demo.gif)
 
-### On-Screen Keyboard on Touch Input (add GIF)
+### On-Screen Keyboard on Touch Input
 
-![On-Screen Keyboard Demo](docs/gifs/onscreen-keyboard.gif)
+![On-Screen Keyboard Demo](BrowserHost/osk_demo.gif)
 
 ## Requirements
 
