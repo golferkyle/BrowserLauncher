@@ -45,29 +45,28 @@ string browserHostDir = Path.GetDirectoryName(browserHostPath)!;
 log.Info($"Config loaded: {screens.Count} screens, delay: {delay}s");
 log.Info($"BrowserHost path: {browserHostPath}");
 
+// Write per-screen config files so BrowserHost can read them without fragile CLI arg escaping
+var configDir = Path.Combine(Path.GetTempPath(), "BrowserHost");
+Directory.CreateDirectory(configDir);
+
 var screenIndex = 0;
 foreach (var screen in screens)
 {
     log.Info($"Starting task for monitor {screen.MonitorIndex}: {screen.Url}, AllowExit: {screen.AllowExit}, ExitUrl: {screen.ExitUrl}, LogConsoleMessages: {screen.LogConsoleMessages}, DevTools: {screen.DevTools}");
-    
-    // Get localStorage JSON from the raw JSON document
-    var localStorageJson = "";
+
+    // Write the raw JSON element for this screen to a temp file.
+    // This preserves the full LocalStorage structure without any CLI escaping issues.
     var screenElement = jsonDoc.RootElement.GetProperty("Screens")[screenIndex];
-    if (screenElement.TryGetProperty("LocalStorage", out var localStorageElement))
-    {
-        var localStorageText = localStorageElement.GetRawText();
-        if (localStorageText != "{}")
-        {
-            localStorageJson = localStorageText;
-        }
-    }
+    var configFilePath = Path.Combine(configDir, $"screen_config_{screen.MonitorIndex}.json");
+    File.WriteAllText(configFilePath, screenElement.GetRawText());
+    log.Info($"Wrote screen config to {configFilePath}");
     screenIndex++;
-    
-    Task.Run(async () => 
+
+    Task.Run(async () =>
     {
         try
         {
-            await RunBrowser(screen, delay, browserHostPath, browserHostDir, localStorageJson);
+            await RunBrowser(screen, delay, browserHostPath, browserHostDir, configFilePath);
         }
         catch (Exception ex)
         {
@@ -81,19 +80,19 @@ Task.Run(() => CleanupLogs(logDirectory, logCleanupDays, log));
 
 await Task.Delay(Timeout.Infinite);
 
-static async Task RunBrowser(ScreenConfig cfg, int delay, string exePath, string workingDir, string localStorageJson)
+static async Task RunBrowser(ScreenConfig cfg, int delay, string exePath, string workingDir, string configFilePath)
 {
     var log = LogManager.GetLogger(typeof(Program));
     while (true)
     {
         log.Info($"Launching BrowserHost for monitor {cfg.MonitorIndex}");
-        
+
         var process = new Process
         {
             StartInfo = new ProcessStartInfo
             {
                 FileName = exePath,
-                Arguments = $"{cfg.MonitorIndex} \"{cfg.Url}\" {cfg.AllowExit} \"{cfg.ExitUrl}\" {cfg.LogConsoleMessages} \"{localStorageJson.Replace("\"", "\\\"")}\" {cfg.DevTools}",
+                Arguments = $"{cfg.MonitorIndex} \"{configFilePath}\"",
                 WorkingDirectory = workingDir,
                 UseShellExecute = true
             }
