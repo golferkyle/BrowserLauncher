@@ -62,33 +62,37 @@ namespace BrowserHost
             log.Info($"Starting BrowserHost with args: {string.Join(" ", args)}");
             try
             {
-                if (args.Length < 7)
+                if (args.Length < 3 || monitorIndex < 0)
                 {
-                    log.Info("Not enough args, shutting down");
+                    log.Info("Expected args: <MonitorIndex> <ConfigFilePath>. Shutting down.");
                     System.Windows.Application.Current.Shutdown();
                     return;
                 }
 
-                if (monitorIndex < 0)
-                {
-                    log.Info("Monitor index missing or invalid, shutting down");
-                    System.Windows.Application.Current.Shutdown();
-                    return;
-                }
+                // Read all configuration from the JSON config file written by the Launcher.
+                // This avoids fragile command-line escaping of complex JSON values.
+                var configFilePath = args[2];
+                log.Info($"Reading config from: {configFilePath}");
+                var configJson = File.ReadAllText(configFilePath);
+                var configDoc = System.Text.Json.JsonDocument.Parse(configJson);
+                var root = configDoc.RootElement;
 
-                string url = args[2];
+                string url = root.GetProperty("Url").GetString() ?? string.Empty;
                 initialUrl = url;
-                allowExit = bool.Parse(args[3]);
-                exitUrl = args[4];
-                logConsoleMessages = bool.Parse(args[5]);
-                if (args.Length > 6)
+                allowExit = root.TryGetProperty("AllowExit", out var ae) && ae.GetBoolean();
+                exitUrl = root.TryGetProperty("ExitUrl", out var eu) ? eu.GetString() ?? string.Empty : string.Empty;
+                logConsoleMessages = root.TryGetProperty("LogConsoleMessages", out var lc) && lc.GetBoolean();
+                devTools = root.TryGetProperty("DevTools", out var dt) && dt.GetBoolean();
+
+                if (root.TryGetProperty("LocalStorage", out var localStorageElement))
                 {
-                    localStorageJson = args[6];
+                    var localStorageText = localStorageElement.GetRawText();
+                    if (localStorageText != "{}")
+                    {
+                        localStorageJson = localStorageText;
+                    }
                 }
-                if (args.Length > 7)
-                {
-                    devTools = bool.Parse(args[7]);
-                }
+
                 if (string.IsNullOrWhiteSpace(exitUrl))
                 {
                     exitUrl = url;
