@@ -101,7 +101,7 @@ static async Task RunBrowser(ScreenConfig cfg, int delay, string exePath, string
 
         process.Start();
         await process.WaitForExitAsync();
-        log.Info($"Process exited with code {process.ExitCode}, restarting in {delay}s");
+        log.Info($"Process exited with code {process.ExitCode} for monitor {cfg.MonitorIndex}");
         if (process.ExitCode == 0)
         {
             log.Info("Manual exit detected, shutting down all browsers and launcher");
@@ -110,6 +110,11 @@ static async Task RunBrowser(ScreenConfig cfg, int delay, string exePath, string
                 try { p.Kill(); } catch { }
             }
             Environment.Exit(0);
+        }
+        if (process.ExitCode == 2)
+        {
+            log.Warn($"Monitor {cfg.MonitorIndex} not found. Stopping retries for this screen.");
+            break;
         }
         await Task.Delay(TimeSpan.FromSeconds(delay));
     }
