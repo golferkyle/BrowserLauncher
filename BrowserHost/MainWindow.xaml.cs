@@ -174,7 +174,11 @@ namespace BrowserHost
                             var scriptLines = new System.Text.StringBuilder();
                             foreach (var kvp in localStorageData)
                             {
-                                var value = kvp.Value.GetRawText();
+                                // Use Serialize instead of GetRawText to produce compact JSON
+                                // matching what JavaScript's JSON.stringify() would output.
+                                // GetRawText preserves source formatting (whitespace, newlines)
+                                // which can break web apps that compare localStorage values.
+                                var value = System.Text.Json.JsonSerializer.Serialize(kvp.Value);
 
                                 var escapedValue = value.Replace("\\", "\\\\").Replace("'", "\\'")
                                                         .Replace("\n", "\\n").Replace("\r", "\\r");
