@@ -100,8 +100,13 @@ namespace BrowserHost
                 log.Info($"Available screens: {screens.Length}");
                 if (monitorIndex >= screens.Length)
                 {
-                    log.Info("Monitor index out of range, shutting down");
-                    System.Windows.Application.Current.Shutdown();
+                    log.Error($"Monitor index {monitorIndex} out of range (only {screens.Length} monitor(s) detected)");
+                    System.Windows.MessageBox.Show(
+                        $"Unable to launch application on browser {monitorIndex}.\n\nOnly {screens.Length} monitor(s) detected. Monitor index {monitorIndex} is not available.",
+                        "BrowserHost - Monitor Not Found",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                    System.Windows.Application.Current.Shutdown(2);
                     return;
                 }
 
@@ -124,9 +129,16 @@ namespace BrowserHost
                     log.Warn($"Could not determine installed WebView2 browser version: {ex.Message}");
                 }
 
-                // Initialize WebView2 normally (we'll implement a JS-based pull-to-refresh)
-                await WebView.EnsureCoreWebView2Async();
-                log.Info("WebView2 ensured");
+                // Initialize WebView2 with a per-monitor user data folder so each instance
+                // has its own isolated session (localStorage, cookies, cache, etc.)
+                var userDataFolder = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "BrowserHost",
+                    $"Monitor{monitorIndex}");
+                log.Info($"WebView2 user data folder: {userDataFolder}");
+                var webView2Env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
+                await WebView.EnsureCoreWebView2Async(webView2Env);
+                log.Info("WebView2 ensured with per-monitor profile");
 
                 WebView.CoreWebView2.NavigationStarting += WebView_NavigationStarting;
                 WebView.CoreWebView2.NavigationCompleted += WebView_NavigationCompleted;
