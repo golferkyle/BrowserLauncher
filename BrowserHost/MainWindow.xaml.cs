@@ -1,6 +1,7 @@
 using Microsoft.Web.WebView2.Core;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Windows;
 using System.Windows.Forms;
 using System.IO;
@@ -29,6 +30,7 @@ namespace BrowserHost
         private bool logConsoleMessages = false;
         private string localStorageJson = string.Empty;
         private bool devTools = false;
+        private bool enableOnScreenKeyboard = true;
         // Tracks whether a navigation has started recently to detect if Reload() took effect
         private volatile bool navigationStartedRecently = false;
         private string initialUrl = string.Empty;
@@ -54,6 +56,8 @@ namespace BrowserHost
             XmlConfigurator.Configure(new FileInfo(logConfig));
             InitializeComponent();
             Loaded += OnLoaded;
+            LocationChanged += (s, e) => { if (ExitPopup.IsOpen) PositionAndShowExitPopup(); };
+            SizeChanged += (s, e) => { if (ExitPopup.IsOpen) PositionAndShowExitPopup(); };
         }
 
         private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -83,6 +87,7 @@ namespace BrowserHost
                 exitUrl = root.TryGetProperty("ExitUrl", out var eu) ? eu.GetString() ?? string.Empty : string.Empty;
                 logConsoleMessages = root.TryGetProperty("LogConsoleMessages", out var lc) && lc.GetBoolean();
                 devTools = root.TryGetProperty("DevTools", out var dt) && dt.GetBoolean();
+                enableOnScreenKeyboard = !root.TryGetProperty("EnableOnScreenKeyboard", out var eok) || eok.GetBoolean();
 
                 if (root.TryGetProperty("LocalStorage", out var localStorageElement))
                 {
@@ -93,34 +98,88 @@ namespace BrowserHost
                     }
                 }
 
-                if (string.IsNullOrWhiteSpace(exitUrl))
+                // If AllowExit is true and ExitUrl is empty, default to initial URL
+                // If AllowExit is false and ExitUrl is empty, keep it empty (button never shows)
+                if (string.IsNullOrWhiteSpace(exitUrl) && allowExit)
                 {
                     exitUrl = url;
                     log.Info($"ExitUrl not provided; using initial URL as exit target: {exitUrl}");
                 }
                 log.Info($"Monitor: {monitorIndex}, URL: {url}, AllowExit: {allowExit}, ExitUrl: {exitUrl}, LogConsoleMessages: {logConsoleMessages}, DevTools: {devTools}, LocalStorage: {(string.IsNullOrWhiteSpace(localStorageJson) ? "none" : "configured")}");
 
-                var screens = Screen.AllScreens;
-                log.Info($"Available screens: {screens.Length}");
-                if (monitorIndex >= screens.Length)
+                // Show/position exit button popup if allowed
+                if (allowExit)
                 {
-                    log.Error($"Monitor index {monitorIndex} out of range (only {screens.Length} monitor(s) detected)");
-                    System.Windows.MessageBox.Show(
-                        $"Unable to launch application on browser {monitorIndex}.\n\nOnly {screens.Length} monitor(s) detected. Monitor index {monitorIndex} is not available.",
-                        "BrowserHost - Monitor Not Found",
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Warning);
-                    System.Windows.Application.Current.Shutdown(2);
-                    return;
+                    log.Info("AllowExit=true, opening exit button popup immediately");
+                    PositionAndShowExitPopup();
                 }
 
-                var screen = screens[monitorIndex];
-                log.Info($"Screen bounds: {screen.Bounds}");
+                // Read the resolved screen bounds that Launcher computed using
+                // position-based (left-to-right) monitor mapping.
+                if (root.TryGetProperty("ResolvedLeft", out var rl) &&
+                    root.TryGetProperty("ResolvedTop", out var rt) &&
+                    root.TryGetProperty("ResolvedWidth", out var rw) &&
+                    root.TryGetProperty("ResolvedHeight", out var rh))
+                {
+                    Left = rl.GetInt32();
+                    Top = rt.GetInt32();
+                    Width = rw.GetInt32();
+                    Height = rh.GetInt32();
 
-                Left = screen.Bounds.Left;
-                Top = screen.Bounds.Top;
-                Width = screen.Bounds.Width;
-                Height = screen.Bounds.Height;
+                    var resolvedDevice = root.TryGetProperty("ResolvedDeviceName", out var rd) ? rd.GetString() : "unknown";
+                    log.Info($"Using Launcher-resolved bounds: Left={Left}, Top={Top}, Width={Width}, Height={Height}, Device={resolvedDevice}");
+                }
+                else
+                {
+                    // Fallback: Launcher did not provide resolved bounds (e.g. older Launcher version).
+                    // Use position-based detection directly.
+                    var screens = Screen.AllScreens
+                        .OrderBy(s => s.Bounds.X)
+                        .ThenBy(s => s.Bounds.Y)
+                        .ToArray();
+                    log.Info($"No resolved bounds in config — falling back to local detection. Available screens: {screens.Length}");
+                    if (monitorIndex >= screens.Length)
+                    {
+                        log.Error($"Monitor index {monitorIndex} out of range (only {screens.Length} monitor(s) detected)");
+                        System.Windows.MessageBox.Show(
+                            $"Unable to launch application on monitor {monitorIndex}.\n\nOnly {screens.Length} monitor(s) detected. Monitor index {monitorIndex} is not available.",
+                            "BrowserHost - Monitor Not Found",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning);
+                        System.Windows.Application.Current.Shutdown(2);
+                        return;
+                    }
+
+                    var screen = screens[monitorIndex];
+                    Left = screen.Bounds.Left;
+                    Top = screen.Bounds.Top;
+                    Width = screen.Bounds.Width;
+                    Height = screen.Bounds.Height;
+                    log.Info($"Fallback screen bounds: {screen.DeviceName} at {screen.Bounds}");
+                }
+
+                // If Launcher detected missing monitors and this screen is launching anyway,
+                // show a brief warning overlay about which screens could not start.
+                if (root.TryGetProperty("SkippedMonitors", out var skippedEl) &&
+                    root.TryGetProperty("ExpectedMonitorCount", out var expEl) &&
+                    root.TryGetProperty("DetectedMonitorCount", out var detEl))
+                {
+                    var expected = expEl.GetInt32();
+                    var detected = detEl.GetInt32();
+                    var skippedList = new List<int>();
+                    foreach (var item in skippedEl.EnumerateArray())
+                        skippedList.Add(item.GetInt32());
+
+                    var skippedStr = string.Join(", ", skippedList);
+                    var warningMsg = $"Warning: Only {detected} of {expected} expected monitor(s) detected.\n" +
+                                     $"Monitor(s) {skippedStr} could not be launched.";
+                    log.Warn(warningMsg);
+                    System.Windows.MessageBox.Show(
+                        warningMsg,
+                        "BrowserHost - Missing Monitors",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                }
 
                 log.Info("Ensuring WebView2");
                 try
@@ -386,6 +445,11 @@ namespace BrowserHost
                 }
 
                 // Inject touch-aware editable-focus detection to trigger on-screen keyboard
+                if (!enableOnScreenKeyboard)
+                {
+                    log.Info("On-screen keyboard disabled via config");
+                }
+                else
                 try
                 {
                     await WebView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(@"
@@ -493,6 +557,10 @@ namespace BrowserHost
                 }
 
                 log.Info($"Navigating to {url}");
+                
+                // Update exit button visibility before navigation so it shows immediately
+                UpdateExitPopup(url);
+                
                 WebView.CoreWebView2.Navigate(url);
             }
             catch (Exception ex)
@@ -528,7 +596,7 @@ namespace BrowserHost
 
         private void WebView_GotFocus(object sender, RoutedEventArgs e)
         {
-            // Reassert exit popup visibility when WebView2 focus changes.
+            // Reassert exit button visibility when WebView2 focus changes.
             var currentUrl = WebView?.CoreWebView2?.Source ?? WebView.Source?.ToString() ?? string.Empty;
             UpdateExitPopup(currentUrl);
         }
@@ -537,15 +605,33 @@ namespace BrowserHost
         {
             var url = currentUrl ?? string.Empty;
 
-            // On initial load/focus transitions WebView can report empty or transient values.
-            // Ignore those states so we don't hide the Exit button incorrectly.
+            // Show the popup only if URL matches ExitUrl, regardless of AllowExit setting.
+            // AllowExit primarily controls initial popup positioning.
             if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url, UriKind.Absolute, out _))
             {
+                ExitPopup.IsOpen = false;
                 return;
             }
 
-            bool show = allowExit && UrlMatchesExit(url, exitUrl);
-            ExitPopup.IsOpen = show;
+            bool matches = UrlMatchesExit(url, exitUrl);
+            ExitPopup.IsOpen = matches;
+            if (matches)
+                PositionAndShowExitPopup();
+        }
+
+        private void PositionAndShowExitPopup()
+        {
+            // Anchor button to the bottom-right corner with 5px border on all sides
+            // Button dimensions: 160px wide x 56px tall
+            // Keep 5px margin from all edges to prevent multi-monitor bleed
+            var x = this.ActualWidth - 5;   // Right edge with 5px border
+            var y = this.ActualHeight - 5;   // Bottom edge with 5px border
+            
+            log.Info($"PositionAndShowExitPopup: window size ({this.ActualWidth}x{this.ActualHeight}) -> popup offset ({x},{y})");
+            
+            ExitPopup.HorizontalOffset = x;
+            ExitPopup.VerticalOffset = y;
+            ExitPopup.IsOpen = true;
         }
 
         private static bool UrlMatchesExit(string current, string exit)
@@ -663,6 +749,10 @@ namespace BrowserHost
 
                 if (string.Equals(message, "SHOW_OSK", StringComparison.Ordinal))
                 {
+                    if (!enableOnScreenKeyboard)
+                    {
+                        return;
+                    }
                     log.Info("SHOW_OSK requested from web content");
                     ShowOnScreenKeyboard();
                     return;
