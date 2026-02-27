@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using System.Diagnostics;
 using System.IO;
+using System.Windows.Forms;
 using log4net;
 using log4net.Config;
 
@@ -45,6 +46,39 @@ string browserHostDir = Path.GetDirectoryName(browserHostPath)!;
 log.Info($"Config loaded: {screens.Count} screens, delay: {delay}s");
 log.Info($"BrowserHost path: {browserHostPath}");
 
+// ── Position-based monitor detection ──
+// Sort physical monitors left-to-right (by X), then top-to-bottom (by Y).
+// This ensures MonitorIndex 0 = leftmost, 1 = next, etc., regardless of
+// how Windows enumerates DISPLAY devices.
+var physicalScreens = Screen.AllScreens
+    .OrderBy(s => s.Bounds.X)
+    .ThenBy(s => s.Bounds.Y)
+    .ToArray();
+
+log.Info($"Detected {physicalScreens.Length} monitor(s) (sorted by position):");
+for (int i = 0; i < physicalScreens.Length; i++)
+{
+    var s = physicalScreens[i];
+    log.Info($"  Position {i}: {s.DeviceName}, Primary={s.Primary}, Bounds={s.Bounds}");
+}
+
+bool enableOnScreenKeyboard = config.GetValue<bool?>("EnableOnScreenKeyboard") ?? true;
+log.Info($"EnableOnScreenKeyboard: {enableOnScreenKeyboard}");
+int expectedCount = screens.Count;
+int detectedCount = physicalScreens.Length;
+
+bool monitorsMissing = detectedCount < expectedCount;
+if (monitorsMissing)
+{
+    log.Warn($"Monitor mismatch: appsettings expects {expectedCount} screen(s) but only {detectedCount} detected.");
+}
+
+// Determine which screens cannot launch due to insufficient monitors
+var skippedScreens = screens
+    .Where(s => s.MonitorIndex < 0 || s.MonitorIndex >= detectedCount)
+    .Select(s => s.MonitorIndex)
+    .ToList();
+
 // Write per-screen config files so BrowserHost can read them without fragile CLI arg escaping
 var configDir = Path.Combine(Path.GetTempPath(), "BrowserHost");
 Directory.CreateDirectory(configDir);
@@ -52,13 +86,53 @@ Directory.CreateDirectory(configDir);
 var screenIndex = 0;
 foreach (var screen in screens)
 {
-    log.Info($"Starting task for monitor {screen.MonitorIndex}: {screen.Url}, AllowExit: {screen.AllowExit}, ExitUrl: {screen.ExitUrl}, LogConsoleMessages: {screen.LogConsoleMessages}, DevTools: {screen.DevTools}");
+    var positionalIndex = screen.MonitorIndex;
+
+    if (positionalIndex < 0 || positionalIndex >= detectedCount)
+    {
+        log.Warn($"Skipping screen config MonitorIndex={positionalIndex}: only {detectedCount} monitor(s) detected. This browser will not launch.");
+        screenIndex++;
+        continue;
+    }
+
+    // If this screen requires all monitors and some are missing, skip it
+    if (screen.RequireAllMonitors && monitorsMissing)
+    {
+        log.Warn($"Skipping MonitorIndex={positionalIndex}: RequireAllMonitors=true and only {detectedCount} of {expectedCount} monitor(s) detected.");
+        screenIndex++;
+        continue;
+    }
+
+    var physicalScreen = physicalScreens[positionalIndex];
+    log.Info($"Mapping MonitorIndex {positionalIndex} -> {physicalScreen.DeviceName} at {physicalScreen.Bounds}");
+    log.Info($"  URL: {screen.Url}, AllowExit: {screen.AllowExit}, ExitUrl: {screen.ExitUrl}, LogConsoleMessages: {screen.LogConsoleMessages}, DevTools: {screen.DevTools}");
 
     // Write the raw JSON element for this screen to a temp file.
     // This preserves the full LocalStorage structure without any CLI escaping issues.
+    // We also inject the resolved screen bounds so BrowserHost doesn't need to do
+    // its own monitor detection.
     var screenElement = jsonDoc.RootElement.GetProperty("Screens")[screenIndex];
-    var configFilePath = Path.Combine(configDir, $"screen_config_{screen.MonitorIndex}.json");
-    File.WriteAllText(configFilePath, screenElement.GetRawText());
+    var screenJson = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.Nodes.JsonObject>(screenElement.GetRawText());
+    screenJson!["ResolvedLeft"] = physicalScreen.Bounds.Left;
+    screenJson!["ResolvedTop"] = physicalScreen.Bounds.Top;
+    screenJson!["ResolvedWidth"] = physicalScreen.Bounds.Width;
+    screenJson!["ResolvedHeight"] = physicalScreen.Bounds.Height;
+    screenJson!["ResolvedDeviceName"] = physicalScreen.DeviceName;
+    screenJson!["EnableOnScreenKeyboard"] = enableOnScreenKeyboard;
+
+    // If monitors are missing and this screen is launching anyway (RequireAllMonitors=false),
+    // include the list of skipped screens so BrowserHost can show a warning.
+    if (monitorsMissing && skippedScreens.Count > 0)
+    {
+        var skippedArray = new System.Text.Json.Nodes.JsonArray();
+        foreach (var idx in skippedScreens) skippedArray.Add(idx);
+        screenJson!["SkippedMonitors"] = skippedArray;
+        screenJson!["ExpectedMonitorCount"] = expectedCount;
+        screenJson!["DetectedMonitorCount"] = detectedCount;
+    }
+
+    var configFilePath = Path.Combine(configDir, $"screen_config_{positionalIndex}.json");
+    File.WriteAllText(configFilePath, screenJson.ToJsonString());
     log.Info($"Wrote screen config to {configFilePath}");
     screenIndex++;
 
@@ -205,4 +279,4 @@ static void CleanupLogs(string logDirectory, int retentionDays, ILog log)
     }
 }
 
-record ScreenConfig(int MonitorIndex, string Url, bool AllowExit, string ExitUrl, bool LogConsoleMessages, bool DevTools);
+record ScreenConfig(int MonitorIndex, string Url, bool AllowExit, string ExitUrl, bool LogConsoleMessages, bool DevTools, bool RequireAllMonitors = false);
