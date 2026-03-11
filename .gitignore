@@ -40,6 +40,9 @@ bld/
 # Text files (misc)
 log.txt
 
+# Local planning / notes (not for source control)
+keyboardRefresh.md
+
 # Publish folder
 Published/
 
