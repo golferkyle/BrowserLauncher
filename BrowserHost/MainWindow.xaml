@@ -22,7 +22,10 @@
         </Border>
 
         <!-- Row 1: Persistent bottom command bar -->
-        <Border x:Name="BottomBar" Grid.Row="1" Height="70" Background="#1A1A1A">
+        <Border x:Name="BottomBar" Grid.Row="1" Height="70" Background="#1A1A1A" Visibility="Collapsed">
+            <Border.RenderTransform>
+                <TranslateTransform x:Name="BottomBarTranslate" Y="0"/>
+            </Border.RenderTransform>
             <Grid>
                 <!-- Keyboard toggle button – center, visible in Button mode -->
                 <Button x:Name="KeyboardButton"

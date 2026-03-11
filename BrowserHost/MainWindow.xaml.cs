@@ -45,16 +45,24 @@ namespace BrowserHost
 
         // Touch keyboard settings (populated from per-screen config JSON written by Launcher)
         private string _keyboardMode = "Button";       // "Button" | "Auto" | "Off"
-        private bool _enableOskFallback = false;       // allow final osk.exe drop if touch keyboard unavailable
-        private int _keyboardAnimationMs = 200;        // animation duration for WebView margin adjustment
-        private int _keyboardPollIntervalMs = 150;     // how often to poll keyboard rect (ms)
+        private bool _enableOskFallback = false;       // allow osk.exe drop if touch keyboard unavailable
+        private int _keyboardAnimationMs = 200;        // animation duration for WebView margin adjustment (from uisettings.json)
+        private int _keyboardPollIntervalMs = 150;     // keyboard rect poll interval ms (from uisettings.json)
         private bool _kioskTopmost = true;             // desired Topmost state when keyboard is not open
+
+        // Bottom bar settings
+        private bool _autoHideBottomBar = false;       // true = bar slides in/out on demand
+        private bool _bottomBarEnabled = true;         // per-screen kill switch
+        private bool _barAnimating = false;            // guard against overlapping animations
 
         // Touch keyboard runtime state
         private readonly TouchKeyboardService _touchKeyboard = new();
         private DispatcherTimer? _keyboardPollTimer;
         private Rect? _lastKeyboardRectForAnim;
         private int _stableTickCount;
+
+        // Bottom bar runtime state
+        private DispatcherTimer? _autoHideTimer;
 
         public MainWindow()
         {
@@ -107,8 +115,11 @@ namespace BrowserHost
 
                 _keyboardMode = root.TryGetProperty("KeyboardMode", out var km) ? km.GetString() ?? "Button" : "Button";
                 _enableOskFallback = root.TryGetProperty("EnableOskFallback", out var eof) && eof.GetBoolean();
-                _keyboardAnimationMs = root.TryGetProperty("KeyboardAnimationMs", out var kams) ? kams.GetInt32() : 200;
-                _keyboardPollIntervalMs = root.TryGetProperty("KeyboardPollIntervalMs", out var kpims) ? kpims.GetInt32() : 150;
+                _autoHideBottomBar = root.TryGetProperty("AutoHideBottomBar", out var ahb) && ahb.GetBoolean();
+                _bottomBarEnabled = !root.TryGetProperty("BottomBarEnabled", out var bbe) || bbe.GetBoolean();
+
+                // Load animation/poll intervals from uisettings.json (BrowserHost dir), not from Launcher config
+                LoadUiSettings();
 
                 if (root.TryGetProperty("LocalStorage", out var localStorageElement))
                 {
@@ -126,10 +137,27 @@ namespace BrowserHost
                     exitUrl = url;
                     log.Info($"ExitUrl not provided; using initial URL as exit target: {exitUrl}");
                 }
-                log.Info($"Monitor: {monitorIndex}, URL: {url}, AllowExit: {allowExit}, ExitUrl: {exitUrl}, LogConsoleMessages: {logConsoleMessages}, DevTools: {devTools}, LocalStorage: {(string.IsNullOrWhiteSpace(localStorageJson) ? "none" : "configured")}, KeyboardMode: {_keyboardMode}, EnableOskFallback: {_enableOskFallback}, KeyboardAnimationMs: {_keyboardAnimationMs}, KeyboardPollIntervalMs: {_keyboardPollIntervalMs}");
+                log.Info($"Monitor: {monitorIndex}, URL: {url}, AllowExit: {allowExit}, ExitUrl: {exitUrl}, LogConsoleMessages: {logConsoleMessages}, DevTools: {devTools}, LocalStorage: {(string.IsNullOrWhiteSpace(localStorageJson) ? "none" : "configured")}, KeyboardMode: {_keyboardMode}, EnableOskFallback: {_enableOskFallback}, AutoHideBottomBar: {_autoHideBottomBar}, BottomBarEnabled: {_bottomBarEnabled}, KeyboardAnimationMs: {_keyboardAnimationMs}, KeyboardPollIntervalMs: {_keyboardPollIntervalMs}");
 
                 // Show keyboard button only in Button mode
                 KeyboardButton.Visibility = _keyboardMode == "Button" ? Visibility.Visible : Visibility.Collapsed;
+
+                // Configure bottom bar initial state
+                if (!_bottomBarEnabled)
+                {
+                    BottomBar.Visibility = Visibility.Collapsed;
+                    log.Info("BottomBar disabled for this screen");
+                }
+                else if (_autoHideBottomBar)
+                {
+                    BottomBar.Visibility = Visibility.Collapsed;
+                    log.Info("BottomBar in auto-hide mode, starts hidden");
+                }
+                else
+                {
+                    ShowBottomBar(animate: false);
+                    log.Info("BottomBar always visible");
+                }
 
                 // Read the resolved screen bounds that Launcher computed using
                 // position-based (left-to-right) monitor mapping.
@@ -541,6 +569,56 @@ namespace BrowserHost
                     log.Warn($"Failed to inject touch keyboard bridge script: {ex.Message}");
                 }
 
+                // Inject text-input focus detection to show/reset auto-hide bottom bar
+                if (_autoHideBottomBar && _bottomBarEnabled)
+                {
+                    try
+                    {
+                        await WebView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(@"
+                            (function() {
+                                if (window.__textInputBridgeInstalled) return;
+                                window.__textInputBridgeInstalled = true;
+
+                                function isEditable(el) {
+                                    if (!el || el.disabled || el.readOnly) return false;
+                                    var tag = (el.tagName || '').toLowerCase();
+                                    if (tag === 'textarea') return true;
+                                    if (el.isContentEditable) return true;
+                                    var role = (el.getAttribute && el.getAttribute('role')) || '';
+                                    if (role.toLowerCase() === 'textbox') return true;
+                                    if (tag === 'input') {
+                                        var type = (el.type || 'text').toLowerCase();
+                                        return type === 'text' || type === 'search' || type === 'url' ||
+                                               type === 'tel' || type === 'email' || type === 'password' || type === 'number';
+                                    }
+                                    return false;
+                                }
+
+                                document.addEventListener('focusin', function(e) {
+                                    try {
+                                        if (isEditable(e.target))
+                                            window.chrome.webview.postMessage('TEXTINPUT_FOCUSED');
+                                    } catch(err) {}
+                                }, true);
+
+                                document.addEventListener('focusout', function(e) {
+                                    try {
+                                        setTimeout(function() {
+                                            if (!isEditable(document.activeElement))
+                                                window.chrome.webview.postMessage('TEXTINPUT_BLURRED');
+                                        }, 100);
+                                    } catch(err) {}
+                                }, true);
+                            })();
+                        ");
+                        log.Info("Injected text input focus bridge for auto-hide bottom bar");
+                    }
+                    catch (Exception ex)
+                    {
+                        log.Warn($"Failed to inject text input bridge: {ex.Message}");
+                    }
+                }
+
                 WebView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
                 WebView.CoreWebView2.Settings.AreDevToolsEnabled = false;
                 WebView.CoreWebView2.Settings.AreBrowserAcceleratorKeysEnabled = false;
@@ -623,14 +701,29 @@ namespace BrowserHost
         {
             var url = currentUrl ?? string.Empty;
 
-            // Show exit button only if URL matches ExitUrl.
             if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url, UriKind.Absolute, out _))
             {
                 ExitButton.Visibility = Visibility.Collapsed;
                 return;
             }
 
-            ExitButton.Visibility = UrlMatchesExit(url, exitUrl) ? Visibility.Visible : Visibility.Collapsed;
+            bool matches = UrlMatchesExit(url, exitUrl);
+            ExitButton.Visibility = matches ? Visibility.Visible : Visibility.Collapsed;
+
+            if (_autoHideBottomBar && _bottomBarEnabled)
+            {
+                if (matches)
+                {
+                    // Exit URL active: show bar and keep it permanently (stop auto-hide)
+                    ShowBottomBar();
+                    _autoHideTimer?.Stop();
+                }
+                else
+                {
+                    // Not on exit URL: start/reset auto-hide countdown
+                    ResetAutoHideTimer();
+                }
+            }
         }
 
         private static bool UrlMatchesExit(string current, string exit)
@@ -746,6 +839,23 @@ namespace BrowserHost
                     return;
                 }
 
+                if (string.Equals(message, "TEXTINPUT_FOCUSED", StringComparison.Ordinal))
+                {
+                    if (_autoHideBottomBar && _bottomBarEnabled)
+                    {
+                        ShowBottomBar();
+                        ResetAutoHideTimer();
+                    }
+                    return;
+                }
+
+                if (string.Equals(message, "TEXTINPUT_BLURRED", StringComparison.Ordinal))
+                {
+                    if (_autoHideBottomBar && _bottomBarEnabled)
+                        ResetAutoHideTimer();
+                    return;
+                }
+
                 if (string.Equals(message, "SHOW_OSK", StringComparison.Ordinal))
                 {
                     // SHOW_OSK is only honoured in Auto mode (legacy JS-driven flow).
@@ -777,6 +887,103 @@ namespace BrowserHost
             catch (Exception ex)
             {
                 log.Error($"Error logging console message: {ex.Message}");
+            }
+        }
+
+        private void ShowBottomBar(bool animate = true)
+        {
+            if (!_bottomBarEnabled) return;
+            if (BottomBar.Visibility == Visibility.Visible && BottomBarTranslate.Y < 1) return;
+            if (_barAnimating) return;
+
+            // Clear any held animation and set base value to off-screen start position
+            BottomBarTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+            BottomBarTranslate.Y = BottomBar.Height;
+            BottomBar.Visibility = Visibility.Visible;
+
+            if (!animate)
+            {
+                BottomBarTranslate.Y = 0;
+                return;
+            }
+
+            _barAnimating = true;
+            var anim = new DoubleAnimation(0, TimeSpan.FromMilliseconds(250))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+            };
+            anim.Completed += (s, e) =>
+            {
+                _barAnimating = false;
+                BottomBarTranslate.Y = 0;
+                BottomBarTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+            };
+            BottomBarTranslate.BeginAnimation(TranslateTransform.YProperty, anim);
+        }
+
+        private void HideBottomBar()
+        {
+            if (!_bottomBarEnabled || BottomBar.Visibility != Visibility.Visible) return;
+            if (_barAnimating) return;
+
+            BottomBarTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+            BottomBarTranslate.Y = 0;
+
+            _barAnimating = true;
+            var anim = new DoubleAnimation(BottomBar.Height, TimeSpan.FromMilliseconds(250))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
+            };
+            anim.Completed += (s, e) =>
+            {
+                _barAnimating = false;
+                BottomBarTranslate.Y = BottomBar.Height;
+                BottomBarTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+                BottomBar.Visibility = Visibility.Collapsed;
+            };
+            BottomBarTranslate.BeginAnimation(TranslateTransform.YProperty, anim);
+        }
+
+        private void ResetAutoHideTimer()
+        {
+            if (!_autoHideBottomBar || !_bottomBarEnabled) return;
+            if (_autoHideTimer == null)
+            {
+                _autoHideTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
+                _autoHideTimer.Tick += AutoHideTimer_Tick;
+            }
+            _autoHideTimer.Stop();
+            _autoHideTimer.Start();
+        }
+
+        private void AutoHideTimer_Tick(object? sender, EventArgs e)
+        {
+            _autoHideTimer!.Stop();
+            // Keep bar visible while exit button is shown
+            if (ExitButton.Visibility == Visibility.Visible)
+            {
+                _autoHideTimer.Start();
+                return;
+            }
+            log.Info("Auto-hiding bottom bar after timeout");
+            HideBottomBar();
+        }
+
+        private void LoadUiSettings()
+        {
+            try
+            {
+                var path = Path.Combine(AppContext.BaseDirectory, "uisettings.json");
+                if (!File.Exists(path)) return;
+                var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
+                var root = doc.RootElement;
+                if (root.TryGetProperty("KeyboardAnimationMs", out var kams)) _keyboardAnimationMs = kams.GetInt32();
+                if (root.TryGetProperty("KeyboardPollIntervalMs", out var kpims)) _keyboardPollIntervalMs = kpims.GetInt32();
+                log.Info($"uisettings.json loaded: KeyboardAnimationMs={_keyboardAnimationMs}, KeyboardPollIntervalMs={_keyboardPollIntervalMs}");
+            }
+            catch (Exception ex)
+            {
+                log.Warn($"Failed to load uisettings.json: {ex.Message}");
             }
         }
 

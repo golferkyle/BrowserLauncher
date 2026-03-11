@@ -65,9 +65,8 @@ for (int i = 0; i < physicalScreens.Length; i++)
 bool enableOnScreenKeyboard = config.GetValue<bool?>("EnableOnScreenKeyboard") ?? true;
 string keyboardMode = config.GetValue<string?>("KeyboardMode") ?? "Button";
 bool enableOskFallback = config.GetValue<bool?>("EnableOskFallback") ?? false;
-int keyboardAnimationMs = config.GetValue<int?>("KeyboardAnimationMs") ?? 200;
-int keyboardPollIntervalMs = config.GetValue<int?>("KeyboardPollIntervalMs") ?? 150;
-log.Info($"EnableOnScreenKeyboard: {enableOnScreenKeyboard}, KeyboardMode: {keyboardMode}, EnableOskFallback: {enableOskFallback}");
+bool autoHideBottomBar = config.GetValue<bool?>("AutoHideBottomBar") ?? false;
+log.Info($"EnableOnScreenKeyboard: {enableOnScreenKeyboard}, KeyboardMode: {keyboardMode}, EnableOskFallback: {enableOskFallback}, AutoHideBottomBar: {autoHideBottomBar}");
 int expectedCount = screens.Count;
 int detectedCount = physicalScreens.Length;
 
@@ -125,8 +124,7 @@ foreach (var screen in screens)
     screenJson!["EnableOnScreenKeyboard"] = enableOnScreenKeyboard;
     screenJson!["KeyboardMode"] = keyboardMode;
     screenJson!["EnableOskFallback"] = enableOskFallback;
-    screenJson!["KeyboardAnimationMs"] = keyboardAnimationMs;
-    screenJson!["KeyboardPollIntervalMs"] = keyboardPollIntervalMs;
+    screenJson!["AutoHideBottomBar"] = autoHideBottomBar;
 
     // If monitors are missing and this screen is launching anyway (RequireAllMonitors=false),
     // include the list of skipped screens so BrowserHost can show a warning.
