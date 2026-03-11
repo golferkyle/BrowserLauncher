@@ -66,7 +66,8 @@ bool enableOnScreenKeyboard = config.GetValue<bool?>("EnableOnScreenKeyboard") ?
 string keyboardMode = config.GetValue<string?>("KeyboardMode") ?? "Button";
 bool enableOskFallback = config.GetValue<bool?>("EnableOskFallback") ?? false;
 bool autoHideBottomBar = config.GetValue<bool?>("AutoHideBottomBar") ?? false;
-log.Info($"EnableOnScreenKeyboard: {enableOnScreenKeyboard}, KeyboardMode: {keyboardMode}, EnableOskFallback: {enableOskFallback}, AutoHideBottomBar: {autoHideBottomBar}");
+bool alwaysAllowExit = config.GetValue<bool?>("AlwaysAllowExit") ?? false;
+log.Info($"EnableOnScreenKeyboard: {enableOnScreenKeyboard}, KeyboardMode: {keyboardMode}, EnableOskFallback: {enableOskFallback}, AutoHideBottomBar: {autoHideBottomBar}, AlwaysAllowExit: {alwaysAllowExit}");
 int expectedCount = screens.Count;
 int detectedCount = physicalScreens.Length;
 
@@ -125,6 +126,7 @@ foreach (var screen in screens)
     screenJson!["KeyboardMode"] = keyboardMode;
     screenJson!["EnableOskFallback"] = enableOskFallback;
     screenJson!["AutoHideBottomBar"] = autoHideBottomBar;
+    screenJson!["AlwaysAllowExit"] = alwaysAllowExit;
 
     // If monitors are missing and this screen is launching anyway (RequireAllMonitors=false),
     // include the list of skipped screens so BrowserHost can show a warning.

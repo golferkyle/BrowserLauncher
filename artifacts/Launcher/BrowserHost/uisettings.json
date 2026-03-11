@@ -1,4 +1,6 @@
 {
   "KeyboardAnimationMs": 200,
-  "KeyboardPollIntervalMs": 150
+  "KeyboardPollIntervalMs": 150,
+  "BottomBarTimeoutSec": 5,
+  "ExitConfirmPrompt": "Are you sure you want to Exit?"
 }

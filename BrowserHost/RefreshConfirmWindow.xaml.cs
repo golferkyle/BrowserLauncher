@@ -8,13 +8,19 @@ namespace BrowserHost
     {
         Refresh,
         Cancel,
-        Home
+        Home,
+        Exit
     }
 
     public partial class RefreshConfirmWindow : Window, IDisposable
     {
         private bool _disposed = false;
         public RefreshChoice Choice { get; private set; } = RefreshChoice.Cancel;
+
+        public bool ShowExitButton
+        {
+            set => BtnExit.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
+        }
 
         public RefreshConfirmWindow()
         {
@@ -45,6 +51,7 @@ namespace BrowserHost
                 BtnRefresh?.ReleaseMouseCapture();
                 BtnCancel?.ReleaseMouseCapture();
                 BtnHome?.ReleaseMouseCapture();
+                BtnExit?.ReleaseMouseCapture();
 
                 // Toggle IsEnabled to force visual state refresh
                 if (BtnRefresh != null)
@@ -84,6 +91,11 @@ namespace BrowserHost
             CloseWithChoice(RefreshChoice.Home, false);
         }
 
+        private void BtnExit_Click(object sender, RoutedEventArgs e)
+        {
+            CloseWithChoice(RefreshChoice.Exit, false);
+        }
+
         private void CloseWithChoice(RefreshChoice choice, bool? dialogResult)
         {
             try
@@ -93,10 +105,12 @@ namespace BrowserHost
                 if (BtnRefresh != null) BtnRefresh.IsEnabled = false;
                 if (BtnCancel != null) BtnCancel.IsEnabled = false;
                 if (BtnHome != null) BtnHome.IsEnabled = false;
+                if (BtnExit != null) BtnExit.IsEnabled = false;
 
                 try { BtnRefresh?.ReleaseMouseCapture(); } catch { }
                 try { BtnCancel?.ReleaseMouseCapture(); } catch { }
                 try { BtnHome?.ReleaseMouseCapture(); } catch { }
+                try { BtnExit?.ReleaseMouseCapture(); } catch { }
                 try { Mouse.Capture(null); } catch { }
                 try { Keyboard.ClearFocus(); } catch { }
 
@@ -144,6 +158,7 @@ namespace BrowserHost
                 try { if (BtnRefresh != null) BtnRefresh.Click -= BtnRefresh_Click; } catch { }
                 try { if (BtnCancel != null) BtnCancel.Click -= BtnCancel_Click; } catch { }
                 try { if (BtnHome != null) BtnHome.Click -= BtnHome_Click; } catch { }
+                try { if (BtnExit != null) BtnExit.Click -= BtnExit_Click; } catch { }
             }
             _disposed = true;
         }

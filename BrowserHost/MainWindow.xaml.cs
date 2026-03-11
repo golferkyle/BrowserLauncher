@@ -54,6 +54,7 @@ namespace BrowserHost
         private bool _autoHideBottomBar = false;       // true = bar slides in/out on demand
         private bool _bottomBarEnabled = true;         // per-screen kill switch
         private bool _barAnimating = false;            // guard against overlapping animations
+        private int _bottomBarTimeoutSec = 5;          // auto-hide delay (from uisettings.json)
 
         // Touch keyboard runtime state
         private readonly TouchKeyboardService _touchKeyboard = new();
@@ -63,6 +64,11 @@ namespace BrowserHost
 
         // Bottom bar runtime state
         private DispatcherTimer? _autoHideTimer;
+        private bool _onExitUrl = false;             // tracks whether current URL matches exitUrl
+
+        // Exit settings
+        private bool _alwaysAllowExit = false;         // show Exit option in pull-down refresh menu
+        private string _exitConfirmPrompt = "Are you sure you want to Exit?"; // configurable prompt
 
         public MainWindow()
         {
@@ -117,6 +123,7 @@ namespace BrowserHost
                 _enableOskFallback = root.TryGetProperty("EnableOskFallback", out var eof) && eof.GetBoolean();
                 _autoHideBottomBar = root.TryGetProperty("AutoHideBottomBar", out var ahb) && ahb.GetBoolean();
                 _bottomBarEnabled = !root.TryGetProperty("BottomBarEnabled", out var bbe) || bbe.GetBoolean();
+                _alwaysAllowExit = root.TryGetProperty("AlwaysAllowExit", out var aae) && aae.GetBoolean();
 
                 // Load animation/poll intervals from uisettings.json (BrowserHost dir), not from Launcher config
                 LoadUiSettings();
@@ -137,7 +144,7 @@ namespace BrowserHost
                     exitUrl = url;
                     log.Info($"ExitUrl not provided; using initial URL as exit target: {exitUrl}");
                 }
-                log.Info($"Monitor: {monitorIndex}, URL: {url}, AllowExit: {allowExit}, ExitUrl: {exitUrl}, LogConsoleMessages: {logConsoleMessages}, DevTools: {devTools}, LocalStorage: {(string.IsNullOrWhiteSpace(localStorageJson) ? "none" : "configured")}, KeyboardMode: {_keyboardMode}, EnableOskFallback: {_enableOskFallback}, AutoHideBottomBar: {_autoHideBottomBar}, BottomBarEnabled: {_bottomBarEnabled}, KeyboardAnimationMs: {_keyboardAnimationMs}, KeyboardPollIntervalMs: {_keyboardPollIntervalMs}");
+                log.Info($"Monitor: {monitorIndex}, URL: {url}, AllowExit: {allowExit}, ExitUrl: {exitUrl}, LogConsoleMessages: {logConsoleMessages}, DevTools: {devTools}, LocalStorage: {(string.IsNullOrWhiteSpace(localStorageJson) ? "none" : "configured")}, KeyboardMode: {_keyboardMode}, EnableOskFallback: {_enableOskFallback}, AutoHideBottomBar: {_autoHideBottomBar}, BottomBarEnabled: {_bottomBarEnabled}, AlwaysAllowExit: {_alwaysAllowExit}, KeyboardAnimationMs: {_keyboardAnimationMs}, KeyboardPollIntervalMs: {_keyboardPollIntervalMs}, BottomBarTimeoutSec: {_bottomBarTimeoutSec}");
 
                 // Show keyboard button only in Button mode
                 KeyboardButton.Visibility = _keyboardMode == "Button" ? Visibility.Visible : Visibility.Collapsed;
@@ -708,6 +715,8 @@ namespace BrowserHost
             }
 
             bool matches = UrlMatchesExit(url, exitUrl);
+            bool wasOnExitUrl = _onExitUrl;
+            _onExitUrl = matches;
             ExitButton.Visibility = matches ? Visibility.Visible : Visibility.Collapsed;
 
             if (_autoHideBottomBar && _bottomBarEnabled)
@@ -718,11 +727,13 @@ namespace BrowserHost
                     ShowBottomBar();
                     _autoHideTimer?.Stop();
                 }
-                else
+                else if (wasOnExitUrl)
                 {
-                    // Not on exit URL: start/reset auto-hide countdown
+                    // Just left exit URL: start auto-hide countdown so the bar fades out
                     ResetAutoHideTimer();
                 }
+                // Normal navigation (non-exit → non-exit): do not reset timer;
+                // the countdown set by TEXTINPUT_FOCUSED/BLURRED should run uninterrupted.
             }
         }
 
@@ -790,6 +801,7 @@ namespace BrowserHost
                                 confirmDialogOpen = true;
                                 using (var dlg = new RefreshConfirmWindow() { Owner = this })
                                 {
+                                    dlg.ShowExitButton = _alwaysAllowExit;
                                     dlg.ShowDialog();
                                     var choice = dlg.Choice;
                                     // reset the last pull time to avoid immediate duplicates
@@ -818,6 +830,24 @@ namespace BrowserHost
                                         catch (Exception nx)
                                         {
                                             log.Error($"Failed to navigate home after user choice: {nx.Message}");
+                                        }
+                                    }
+                                    else if (choice == RefreshChoice.Exit)
+                                    {
+                                        log.Info("User chose: Exit — showing confirmation");
+                                        using (var exitDlg = new ExitConfirmWindow() { Owner = this })
+                                        {
+                                            exitDlg.PromptText = _exitConfirmPrompt;
+                                            exitDlg.ShowDialog();
+                                            if (exitDlg.Confirmed)
+                                            {
+                                                log.Info("Exit confirmed — shutting down");
+                                                System.Windows.Application.Current.Shutdown();
+                                            }
+                                            else
+                                            {
+                                                log.Info("Exit cancelled by user");
+                                            }
                                         }
                                     }
                                 }
@@ -949,8 +979,13 @@ namespace BrowserHost
             if (!_autoHideBottomBar || !_bottomBarEnabled) return;
             if (_autoHideTimer == null)
             {
-                _autoHideTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
+                _autoHideTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(_bottomBarTimeoutSec) };
                 _autoHideTimer.Tick += AutoHideTimer_Tick;
+            }
+            else
+            {
+                // Update interval in case uisettings were reloaded
+                _autoHideTimer.Interval = TimeSpan.FromSeconds(_bottomBarTimeoutSec);
             }
             _autoHideTimer.Stop();
             _autoHideTimer.Start();
@@ -979,7 +1014,9 @@ namespace BrowserHost
                 var root = doc.RootElement;
                 if (root.TryGetProperty("KeyboardAnimationMs", out var kams)) _keyboardAnimationMs = kams.GetInt32();
                 if (root.TryGetProperty("KeyboardPollIntervalMs", out var kpims)) _keyboardPollIntervalMs = kpims.GetInt32();
-                log.Info($"uisettings.json loaded: KeyboardAnimationMs={_keyboardAnimationMs}, KeyboardPollIntervalMs={_keyboardPollIntervalMs}");
+                if (root.TryGetProperty("BottomBarTimeoutSec", out var bbts)) _bottomBarTimeoutSec = bbts.GetInt32();
+                if (root.TryGetProperty("ExitConfirmPrompt", out var ecp)) _exitConfirmPrompt = ecp.GetString() ?? _exitConfirmPrompt;
+                log.Info($"uisettings.json loaded: KeyboardAnimationMs={_keyboardAnimationMs}, KeyboardPollIntervalMs={_keyboardPollIntervalMs}, BottomBarTimeoutSec={_bottomBarTimeoutSec}");
             }
             catch (Exception ex)
             {
