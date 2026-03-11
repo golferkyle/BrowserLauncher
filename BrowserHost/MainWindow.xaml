@@ -10,7 +10,7 @@
         Background="Black"
         AllowsTransparency="True">
 
-    <Grid x:Name="RootGrid">
+    <Grid x:Name="RootGrid" MouseMove="RootGrid_MouseMove">
         <Grid.RowDefinitions>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
@@ -98,6 +98,40 @@
                     </StackPanel>
                 </Button>
             </Grid>
+        </Border>
+
+        <!-- Mouse pull-down trigger tab: overlays top-center, slides down when mouse hovers top zone -->
+        <Border x:Name="MousePullTab"
+                Grid.Row="0" Grid.RowSpan="2"
+                Width="180" Height="40"
+                VerticalAlignment="Top"
+                HorizontalAlignment="Center"
+                Background="#CC1A1A1A"
+                CornerRadius="0,0,10,10"
+                Cursor="Hand"
+                IsHitTestVisible="True"
+                MouseEnter="MousePullTab_MouseEnter"
+                MouseLeave="MousePullTab_MouseLeave"
+                MouseLeftButtonUp="MousePullTab_Click"
+                Panel.ZIndex="100">
+            <Border.RenderTransform>
+                <TranslateTransform x:Name="MousePullTabTranslate" Y="-40"/>
+            </Border.RenderTransform>
+            <Border.Effect>
+                <DropShadowEffect ShadowDepth="3" BlurRadius="8" Opacity="0.5" Direction="270"/>
+            </Border.Effect>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <!-- Three horizontal lines (hamburger / pull indicator) -->
+                <Viewbox Width="22" Height="22" Margin="0,0,6,0">
+                    <Canvas Width="24" Height="24">
+                        <Rectangle Canvas.Left="2" Canvas.Top="5"  Width="20" Height="2.5" RadiusX="1" RadiusY="1" Fill="White"/>
+                        <Rectangle Canvas.Left="2" Canvas.Top="11" Width="20" Height="2.5" RadiusX="1" RadiusY="1" Fill="White"/>
+                        <Rectangle Canvas.Left="2" Canvas.Top="17" Width="20" Height="2.5" RadiusX="1" RadiusY="1" Fill="White"/>
+                    </Canvas>
+                </Viewbox>
+                <TextBlock Text="Menu" Foreground="White" FontFamily="Segoe UI"
+                           FontSize="15" VerticalAlignment="Center"/>
+            </StackPanel>
         </Border>
     </Grid>
 </Window>
