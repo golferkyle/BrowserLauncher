@@ -1,7 +1,7 @@
 <Window x:Class="BrowserHost.RefreshConfirmWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Refresh page?" Height="200" Width="520" WindowStartupLocation="CenterOwner" ResizeMode="NoResize" WindowStyle="SingleBorderWindow">
+        Title="Quick Menu" Height="120" Width="520" WindowStartupLocation="CenterOwner" ResizeMode="NoResize" WindowStyle="SingleBorderWindow">
     <Window.Resources>
         <Style x:Key="DialogButtonStyle" TargetType="Button">
             <Setter Property="FocusVisualStyle" Value="{x:Null}" />
@@ -34,16 +34,7 @@
         </Style>
     </Window.Resources>
     <Grid Margin="12">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
-        </Grid.RowDefinitions>
-
-        <TextBlock Text="Refresh the current page?" FontSize="18" FontWeight="Bold" />
-        <TextBlock Grid.Row="1" Text="Choose 'Refresh' to reload, 'Cancel' to dismiss, or 'Home' to navigate to the initial page." TextWrapping="Wrap" Margin="0,8,0,8" />
-
-        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Center">
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
 
             <!-- Refresh -->
             <Button x:Name="BtnRefresh" Style="{StaticResource DialogButtonStyle}" Click="BtnRefresh_Click"

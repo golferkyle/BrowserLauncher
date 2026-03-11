@@ -29,6 +29,12 @@ namespace BrowserHost
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
+        [DllImport("user32.dll")]
+        private static extern bool GetCursorPos(out POINT pt);
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        private struct POINT { public int X; public int Y; }
+
         private static readonly ILog log = LogManager.GetLogger(typeof(MainWindow));
         private bool allowExit;
         private string exitUrl = string.Empty;
@@ -68,6 +74,12 @@ namespace BrowserHost
         // Exit settings
         private bool _alwaysAllowExit = false;         // show Exit option in pull-down refresh menu
         private string _exitConfirmPrompt = "Are you sure you want to Exit?"; // configurable prompt
+
+        // Mouse pull-tab state
+        private PullTabWindow? _pullTabWindow;          // overlay window (separate HWND, renders above WebView2)
+        private bool _pullTabVisible = false;           // true while tab is slid into view
+        private DispatcherTimer? _pullTabHideTimer;     // auto-retract after idle
+        private DispatcherTimer? _mouseHotZoneTimer;    // polls GetCursorPos for hot-zone detection
 
         public MainWindow()
         {
@@ -661,6 +673,9 @@ namespace BrowserHost
                 UpdateExitButton(url);
                 
                 WebView.CoreWebView2.Navigate(url);
+
+                // Initialize the pull-tab overlay window (separate HWND above WebView2)
+                InitPullTabOverlay();
             }
             catch (Exception ex)
             {
@@ -782,86 +797,7 @@ namespace BrowserHost
                     }
                     lastPullRequestUtc = now;
                     log.Info("Pull-to-refresh requested from page");
-                    if (confirmDialogOpen)
-                    {
-                        log.Info("Confirmation dialog already open — ignoring pull-to-refresh request");
-                        return;
-                    }
-                    try
-                    {
-                        // Show our custom modal confirmation window with labeled buttons
-                        Dispatcher.Invoke(() =>
-                        {
-                            try
-                            {
-                                confirmDialogOpen = true;
-                                using (var dlg = new RefreshConfirmWindow() { Owner = this })
-                                {
-                                    dlg.ShowExitButton = _alwaysAllowExit;
-                                    dlg.ShowDialog();
-                                    var choice = dlg.Choice;
-                                    // reset the last pull time to avoid immediate duplicates
-                                    lastPullRequestUtc = DateTime.UtcNow;
-
-                                    if (choice == RefreshChoice.Refresh)
-                                    {
-                                        log.Info("User chose: Refresh");
-                                        PerformReload();
-                                    }
-                                    else if (choice == RefreshChoice.Cancel)
-                                    {
-                                        log.Info("User chose: Cancel (do nothing)");
-                                    }
-                                    else if (choice == RefreshChoice.Home)
-                                    {
-                                        log.Info("User chose: Home");
-                                        try
-                                        {
-                                            if (!string.IsNullOrWhiteSpace(initialUrl))
-                                            {
-                                                WebView.CoreWebView2.Navigate(initialUrl);
-                                                log.Info($"Navigated home to {initialUrl} after user choice");
-                                            }
-                                        }
-                                        catch (Exception nx)
-                                        {
-                                            log.Error($"Failed to navigate home after user choice: {nx.Message}");
-                                        }
-                                    }
-                                    else if (choice == RefreshChoice.Exit)
-                                    {
-                                        log.Info("User chose: Exit — showing confirmation");
-                                        using (var exitDlg = new ExitConfirmWindow() { Owner = this })
-                                        {
-                                            exitDlg.PromptText = _exitConfirmPrompt;
-                                            exitDlg.ShowDialog();
-                                            if (exitDlg.Confirmed)
-                                            {
-                                                log.Info("Exit confirmed — shutting down");
-                                                System.Windows.Application.Current.Shutdown();
-                                            }
-                                            else
-                                            {
-                                                log.Info("Exit cancelled by user");
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            catch (Exception ux)
-                            {
-                                log.Error($"Failed to show refresh confirmation dialog: {ux.Message}");
-                            }
-                            finally
-                            {
-                                confirmDialogOpen = false;
-                            }
-                        });
-                    }
-                    catch (Exception dx)
-                    {
-                        log.Error($"Error showing confirmation dialog: {dx.Message}");
-                    }
+                    ShowRefreshDialog();
                     return;
                 }
 
@@ -1107,6 +1043,188 @@ namespace BrowserHost
         private void ExitButton_Click(object sender, RoutedEventArgs e)
         {
             System.Windows.Application.Current.Shutdown();
+        }
+
+        // ── Mouse pull-tab ────────────────────────────────────────────────────────
+
+        private void InitPullTabOverlay()
+        {
+            _pullTabWindow = new PullTabWindow { Owner = this };
+            _pullTabWindow.MouseEnteredTab += () => _pullTabHideTimer?.Stop();
+            _pullTabWindow.MouseLeftTab += () => StartPullTabHideTimer();
+            _pullTabWindow.TabClicked += () => { RetractMousePullTab(); InvokePullToRefresh(); };
+
+            // Start hidden above the main window
+            PositionPullTab(visible: false);
+            _pullTabWindow.Show();
+
+            // Poll cursor via Win32 (WebView2 HwndHost swallows WPF mouse events)
+            _mouseHotZoneTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
+            _mouseHotZoneTimer.Tick += (s, e) =>
+            {
+                if (!GetCursorPos(out POINT pt)) return;
+                // Convert screen coords to main-window-relative coords
+                var pos = PointFromScreen(new System.Windows.Point(pt.X, pt.Y));
+                double tabW = 180;
+                double centerLeft  = (ActualWidth - tabW) / 2;
+                double centerRight = centerLeft + tabW;
+                bool inHotZone = pos.Y >= 0 && pos.Y <= 10 && pos.X >= centerLeft && pos.X <= centerRight;
+                if (inHotZone && !_pullTabVisible)
+                    ShowMousePullTab();
+            };
+            _mouseHotZoneTimer.Start();
+        }
+
+        private void PositionPullTab(bool visible)
+        {
+            if (_pullTabWindow == null) return;
+            // Center the 180-wide tab on the main window's top edge
+            double tabW = 180, tabH = 40;
+            _pullTabWindow.Left = Left + (ActualWidth - tabW) / 2;
+            _pullTabWindow.Top  = visible ? Top : Top - tabH;
+        }
+
+        private void ShowMousePullTab()
+        {
+            _pullTabHideTimer?.Stop();
+            if (_pullTabVisible || _pullTabWindow == null) return;
+            _pullTabVisible = true;
+
+            PositionPullTab(visible: false); // start hidden
+            var from = Top - 40;
+            var to = Top;
+            var anim = new DoubleAnimation(from, to, TimeSpan.FromMilliseconds(200))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+            };
+            anim.Completed += (s, e) =>
+            {
+                _pullTabWindow.Top = to;
+                StartPullTabHideTimer();
+            };
+            _pullTabWindow.BeginAnimation(Window.TopProperty, anim);
+        }
+
+        private void RetractMousePullTab()
+        {
+            _pullTabHideTimer?.Stop();
+            if (!_pullTabVisible || _pullTabWindow == null) return;
+            _pullTabVisible = false;
+
+            var from = Top;
+            var to = Top - 40;
+            var anim = new DoubleAnimation(from, to, TimeSpan.FromMilliseconds(200))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
+            };
+            anim.Completed += (s, e) =>
+            {
+                _pullTabWindow.BeginAnimation(Window.TopProperty, null);
+                _pullTabWindow.Top = to;
+            };
+            _pullTabWindow.BeginAnimation(Window.TopProperty, anim);
+        }
+
+        private void StartPullTabHideTimer()
+        {
+            if (_pullTabHideTimer == null)
+            {
+                _pullTabHideTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+                _pullTabHideTimer.Tick += (s, e) => { _pullTabHideTimer.Stop(); RetractMousePullTab(); };
+            }
+            _pullTabHideTimer.Stop();
+            _pullTabHideTimer.Start();
+        }
+
+        private void InvokePullToRefresh()
+        {
+            var now = DateTime.UtcNow;
+            if ((now - lastPullRequestUtc) < TimeSpan.FromMilliseconds(800)) return;
+            lastPullRequestUtc = now;
+            log.Info("Pull-to-refresh requested by mouse pull-tab");
+            ShowRefreshDialog();
+        }
+
+        private void ShowRefreshDialog()
+        {
+            if (confirmDialogOpen)
+            {
+                log.Info("Confirmation dialog already open — ignoring pull-to-refresh request");
+                return;
+            }
+            try
+            {
+                Dispatcher.Invoke(() =>
+                {
+                    try
+                    {
+                        confirmDialogOpen = true;
+                        using (var dlg = new RefreshConfirmWindow() { Owner = this })
+                        {
+                            dlg.ShowExitButton = _alwaysAllowExit;
+                            dlg.ShowDialog();
+                            var choice = dlg.Choice;
+                            lastPullRequestUtc = DateTime.UtcNow;
+
+                            if (choice == RefreshChoice.Refresh)
+                            {
+                                log.Info("User chose: Refresh");
+                                PerformReload();
+                            }
+                            else if (choice == RefreshChoice.Cancel)
+                            {
+                                log.Info("User chose: Cancel (do nothing)");
+                            }
+                            else if (choice == RefreshChoice.Home)
+                            {
+                                log.Info("User chose: Home");
+                                try
+                                {
+                                    if (!string.IsNullOrWhiteSpace(initialUrl))
+                                    {
+                                        WebView.CoreWebView2.Navigate(initialUrl);
+                                        log.Info($"Navigated home to {initialUrl} after user choice");
+                                    }
+                                }
+                                catch (Exception nx)
+                                {
+                                    log.Error($"Failed to navigate home after user choice: {nx.Message}");
+                                }
+                            }
+                            else if (choice == RefreshChoice.Exit)
+                            {
+                                log.Info("User chose: Exit — showing confirmation");
+                                using (var exitDlg = new ExitConfirmWindow() { Owner = this })
+                                {
+                                    exitDlg.PromptText = _exitConfirmPrompt;
+                                    exitDlg.ShowDialog();
+                                    if (exitDlg.Confirmed)
+                                    {
+                                        log.Info("Exit confirmed — shutting down");
+                                        System.Windows.Application.Current.Shutdown();
+                                    }
+                                    else
+                                    {
+                                        log.Info("Exit cancelled by user");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ux)
+                    {
+                        log.Error($"Failed to show refresh confirmation dialog: {ux.Message}");
+                    }
+                    finally
+                    {
+                        confirmDialogOpen = false;
+                    }
+                });
+            }
+            catch (Exception dx)
+            {
+                log.Error($"Error showing confirmation dialog: {dx.Message}");
+            }
         }
 
         private void PerformReload()
