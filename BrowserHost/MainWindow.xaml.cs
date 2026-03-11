@@ -44,7 +44,6 @@ namespace BrowserHost
         private volatile bool confirmDialogOpen = false;
 
         // Touch keyboard settings (populated from per-screen config JSON written by Launcher)
-        private string _keyboardMode = "Button";       // "Button" | "Auto" | "Off"
         private bool _enableOskFallback = false;       // allow osk.exe drop if touch keyboard unavailable
         private int _keyboardAnimationMs = 200;        // animation duration for WebView margin adjustment (from uisettings.json)
         private int _keyboardPollIntervalMs = 150;     // keyboard rect poll interval ms (from uisettings.json)
@@ -119,7 +118,6 @@ namespace BrowserHost
                 devTools = root.TryGetProperty("DevTools", out var dt) && dt.GetBoolean();
                 enableOnScreenKeyboard = !root.TryGetProperty("EnableOnScreenKeyboard", out var eok) || eok.GetBoolean();
 
-                _keyboardMode = root.TryGetProperty("KeyboardMode", out var km) ? km.GetString() ?? "Button" : "Button";
                 _enableOskFallback = root.TryGetProperty("EnableOskFallback", out var eof) && eof.GetBoolean();
                 _autoHideBottomBar = root.TryGetProperty("AutoHideBottomBar", out var ahb) && ahb.GetBoolean();
                 _bottomBarEnabled = !root.TryGetProperty("BottomBarEnabled", out var bbe) || bbe.GetBoolean();
@@ -144,10 +142,10 @@ namespace BrowserHost
                     exitUrl = url;
                     log.Info($"ExitUrl not provided; using initial URL as exit target: {exitUrl}");
                 }
-                log.Info($"Monitor: {monitorIndex}, URL: {url}, AllowExit: {allowExit}, ExitUrl: {exitUrl}, LogConsoleMessages: {logConsoleMessages}, DevTools: {devTools}, LocalStorage: {(string.IsNullOrWhiteSpace(localStorageJson) ? "none" : "configured")}, KeyboardMode: {_keyboardMode}, EnableOskFallback: {_enableOskFallback}, AutoHideBottomBar: {_autoHideBottomBar}, BottomBarEnabled: {_bottomBarEnabled}, AlwaysAllowExit: {_alwaysAllowExit}, KeyboardAnimationMs: {_keyboardAnimationMs}, KeyboardPollIntervalMs: {_keyboardPollIntervalMs}, BottomBarTimeoutSec: {_bottomBarTimeoutSec}");
+                log.Info($"Monitor: {monitorIndex}, URL: {url}, AllowExit: {allowExit}, ExitUrl: {exitUrl}, LogConsoleMessages: {logConsoleMessages}, DevTools: {devTools}, LocalStorage: {(string.IsNullOrWhiteSpace(localStorageJson) ? "none" : "configured")}, EnableOskFallback: {_enableOskFallback}, AutoHideBottomBar: {_autoHideBottomBar}, BottomBarEnabled: {_bottomBarEnabled}, AlwaysAllowExit: {_alwaysAllowExit}, KeyboardAnimationMs: {_keyboardAnimationMs}, KeyboardPollIntervalMs: {_keyboardPollIntervalMs}, BottomBarTimeoutSec: {_bottomBarTimeoutSec}");
 
                 // Show keyboard button only in Button mode
-                KeyboardButton.Visibility = _keyboardMode == "Button" ? Visibility.Visible : Visibility.Collapsed;
+                KeyboardButton.Visibility = enableOnScreenKeyboard ? Visibility.Visible : Visibility.Collapsed;
 
                 // Configure bottom bar initial state
                 if (!_bottomBarEnabled)
@@ -496,13 +494,11 @@ namespace BrowserHost
                     log.Warn($"Failed to inject custom pull-to-refresh script: {ex.Message}");
                 }
 
-                // Inject touch-aware editable-focus detection to trigger on-screen keyboard.
-                // Only active in "Auto" mode; in "Button" mode the user controls the keyboard explicitly.
-                if (!enableOnScreenKeyboard || _keyboardMode != "Auto")
+                // SHOW_OSK JS bridge removed — keyboard is always Button mode.
+                if (!enableOnScreenKeyboard)
                 {
-                    log.Info($"SHOW_OSK JS bridge skipped (EnableOnScreenKeyboard={enableOnScreenKeyboard}, KeyboardMode={_keyboardMode})");
+                    log.Info("SHOW_OSK JS bridge skipped (EnableOnScreenKeyboard=false)");
                 }
-                else
                 try
                 {
                     await WebView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(@"
@@ -888,24 +884,7 @@ namespace BrowserHost
 
                 if (string.Equals(message, "SHOW_OSK", StringComparison.Ordinal))
                 {
-                    // SHOW_OSK is only honoured in Auto mode (legacy JS-driven flow).
-                    // In Button mode the user explicitly presses the keyboard button.
-                    if (!enableOnScreenKeyboard || _keyboardMode != "Auto")
-                        return;
-
-                    log.Info("SHOW_OSK requested from web content (Auto mode)");
-                    var hwnd = new WindowInteropHelper(this).Handle;
-                    // Only open if not already visible, to avoid toggling it closed.
-                    if (!_touchKeyboard.IsOpen)
-                    {
-                        Topmost = false;
-                        if (!_touchKeyboard.Toggle(hwnd) && _enableOskFallback)
-                        {
-                            log.Warn("Touch keyboard unavailable; using accessibility OSK fallback");
-                            ShowAccessibilityOsk();
-                        }
-                        StartKeyboardPollTimer();
-                    }
+                    // SHOW_OSK is no longer honoured — keyboard is always Button mode.
                     return;
                 }
 

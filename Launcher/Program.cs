@@ -63,11 +63,10 @@ for (int i = 0; i < physicalScreens.Length; i++)
 }
 
 bool enableOnScreenKeyboard = config.GetValue<bool?>("EnableOnScreenKeyboard") ?? true;
-string keyboardMode = config.GetValue<string?>("KeyboardMode") ?? "Button";
 bool enableOskFallback = config.GetValue<bool?>("EnableOskFallback") ?? false;
 bool autoHideBottomBar = config.GetValue<bool?>("AutoHideBottomBar") ?? false;
 bool alwaysAllowExit = config.GetValue<bool?>("AlwaysAllowExit") ?? false;
-log.Info($"EnableOnScreenKeyboard: {enableOnScreenKeyboard}, KeyboardMode: {keyboardMode}, EnableOskFallback: {enableOskFallback}, AutoHideBottomBar: {autoHideBottomBar}, AlwaysAllowExit: {alwaysAllowExit}");
+log.Info($"EnableOnScreenKeyboard: {enableOnScreenKeyboard}, EnableOskFallback: {enableOskFallback}, AutoHideBottomBar: {autoHideBottomBar}, AlwaysAllowExit: {alwaysAllowExit}");
 int expectedCount = screens.Count;
 int detectedCount = physicalScreens.Length;
 
@@ -123,7 +122,6 @@ foreach (var screen in screens)
     screenJson!["ResolvedHeight"] = physicalScreen.Bounds.Height;
     screenJson!["ResolvedDeviceName"] = physicalScreen.DeviceName;
     screenJson!["EnableOnScreenKeyboard"] = enableOnScreenKeyboard;
-    screenJson!["KeyboardMode"] = keyboardMode;
     screenJson!["EnableOskFallback"] = enableOskFallback;
     screenJson!["AutoHideBottomBar"] = autoHideBottomBar;
     screenJson!["AlwaysAllowExit"] = alwaysAllowExit;
