@@ -10,7 +10,7 @@
         Background="Black"
         AllowsTransparency="True">
 
-    <Grid x:Name="RootGrid" MouseMove="RootGrid_MouseMove">
+    <Grid x:Name="RootGrid">
         <Grid.RowDefinitions>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
