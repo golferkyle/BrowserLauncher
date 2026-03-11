@@ -29,6 +29,12 @@ namespace BrowserHost
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
+        [DllImport("user32.dll")]
+        private static extern bool GetCursorPos(out POINT pt);
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        private struct POINT { public int X; public int Y; }
+
         private static readonly ILog log = LogManager.GetLogger(typeof(MainWindow));
         private bool allowExit;
         private string exitUrl = string.Empty;
@@ -70,8 +76,10 @@ namespace BrowserHost
         private string _exitConfirmPrompt = "Are you sure you want to Exit?"; // configurable prompt
 
         // Mouse pull-tab state
-        private bool _pullTabVisible = false;          // true while tab is slid into view
-        private DispatcherTimer? _pullTabHideTimer;    // auto-retract after idle
+        private PullTabWindow? _pullTabWindow;          // overlay window (separate HWND, renders above WebView2)
+        private bool _pullTabVisible = false;           // true while tab is slid into view
+        private DispatcherTimer? _pullTabHideTimer;     // auto-retract after idle
+        private DispatcherTimer? _mouseHotZoneTimer;    // polls GetCursorPos for hot-zone detection
 
         public MainWindow()
         {
@@ -665,6 +673,9 @@ namespace BrowserHost
                 UpdateExitButton(url);
                 
                 WebView.CoreWebView2.Navigate(url);
+
+                // Initialize the pull-tab overlay window (separate HWND above WebView2)
+                InitPullTabOverlay();
             }
             catch (Exception ex)
             {
@@ -1036,70 +1047,82 @@ namespace BrowserHost
 
         // ── Mouse pull-tab ────────────────────────────────────────────────────────
 
-        private void MouseHotZone_MouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
+        private void InitPullTabOverlay()
         {
-            ShowMousePullTab();
+            _pullTabWindow = new PullTabWindow { Owner = this };
+            _pullTabWindow.MouseEnteredTab += () => _pullTabHideTimer?.Stop();
+            _pullTabWindow.MouseLeftTab += () => StartPullTabHideTimer();
+            _pullTabWindow.TabClicked += () => { RetractMousePullTab(); InvokePullToRefresh(); };
+
+            // Start hidden above the main window
+            PositionPullTab(visible: false);
+            _pullTabWindow.Show();
+
+            // Poll cursor via Win32 (WebView2 HwndHost swallows WPF mouse events)
+            _mouseHotZoneTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
+            _mouseHotZoneTimer.Tick += (s, e) =>
+            {
+                if (!GetCursorPos(out POINT pt)) return;
+                // Convert screen coords to main-window-relative coords
+                var pos = PointFromScreen(new System.Windows.Point(pt.X, pt.Y));
+                double tabW = 180;
+                double centerLeft  = (ActualWidth - tabW) / 2;
+                double centerRight = centerLeft + tabW;
+                bool inHotZone = pos.Y >= 0 && pos.Y <= 10 && pos.X >= centerLeft && pos.X <= centerRight;
+                if (inHotZone && !_pullTabVisible)
+                    ShowMousePullTab();
+            };
+            _mouseHotZoneTimer.Start();
         }
 
-        private void MousePullTab_MouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
+        private void PositionPullTab(bool visible)
         {
-            // Keep tab visible while mouse is directly over it
-            _pullTabHideTimer?.Stop();
-        }
-
-        private void MousePullTab_MouseLeave(object sender, System.Windows.Input.MouseEventArgs e)
-        {
-            // Start retract countdown when mouse leaves the tab
-            StartPullTabHideTimer();
-        }
-
-        private void MousePullTab_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
-        {
-            RetractMousePullTab();
-            InvokePullToRefresh();
+            if (_pullTabWindow == null) return;
+            // Center the 180-wide tab on the main window's top edge
+            double tabW = 180, tabH = 40;
+            _pullTabWindow.Left = Left + (ActualWidth - tabW) / 2;
+            _pullTabWindow.Top  = visible ? Top : Top - tabH;
         }
 
         private void ShowMousePullTab()
         {
             _pullTabHideTimer?.Stop();
-            if (_pullTabVisible) return;
+            if (_pullTabVisible || _pullTabWindow == null) return;
             _pullTabVisible = true;
 
-            MousePullTabTranslate.BeginAnimation(TranslateTransform.YProperty, null);
-            MousePullTabTranslate.Y = -40;
-
-            var anim = new DoubleAnimation(0, TimeSpan.FromMilliseconds(200))
+            PositionPullTab(visible: false); // start hidden
+            var from = Top - 40;
+            var to = Top;
+            var anim = new DoubleAnimation(from, to, TimeSpan.FromMilliseconds(200))
             {
                 EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
             };
             anim.Completed += (s, e) =>
             {
-                MousePullTabTranslate.BeginAnimation(TranslateTransform.YProperty, null);
-                MousePullTabTranslate.Y = 0;
+                _pullTabWindow.Top = to;
                 StartPullTabHideTimer();
             };
-            MousePullTabTranslate.BeginAnimation(TranslateTransform.YProperty, anim);
+            _pullTabWindow.BeginAnimation(Window.TopProperty, anim);
         }
 
         private void RetractMousePullTab()
         {
             _pullTabHideTimer?.Stop();
-            if (!_pullTabVisible) return;
+            if (!_pullTabVisible || _pullTabWindow == null) return;
             _pullTabVisible = false;
 
-            MousePullTabTranslate.BeginAnimation(TranslateTransform.YProperty, null);
-            MousePullTabTranslate.Y = 0;
-
-            var anim = new DoubleAnimation(-40, TimeSpan.FromMilliseconds(200))
+            var from = Top;
+            var to = Top - 40;
+            var anim = new DoubleAnimation(from, to, TimeSpan.FromMilliseconds(200))
             {
                 EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
             };
             anim.Completed += (s, e) =>
             {
-                MousePullTabTranslate.BeginAnimation(TranslateTransform.YProperty, null);
-                MousePullTabTranslate.Y = -40;
+                _pullTabWindow.BeginAnimation(Window.TopProperty, null);
+                _pullTabWindow.Top = to;
             };
-            MousePullTabTranslate.BeginAnimation(TranslateTransform.YProperty, anim);
+            _pullTabWindow.BeginAnimation(Window.TopProperty, anim);
         }
 
         private void StartPullTabHideTimer()

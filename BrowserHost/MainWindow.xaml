@@ -12,18 +12,17 @@
 
     <Grid x:Name="RootGrid">
         <Grid.RowDefinitions>
-            <RowDefinition Height="40"/>   <!-- Row 0: pull-tab zone (pure WPF, no WebView2 airspace) -->
-            <RowDefinition Height="*"/>    <!-- Row 1: WebView2 -->
-            <RowDefinition Height="Auto"/> <!-- Row 2: bottom bar -->
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- Row 1: WebView2 container. Bottom margin is animated when touch keyboard opens. -->
-        <Border x:Name="WebViewContainer" Grid.Row="1">
+        <!-- Row 0: WebView2 container. Bottom margin is animated when touch keyboard opens. -->
+        <Border x:Name="WebViewContainer" Grid.Row="0">
             <wv2:WebView2 x:Name="WebView"/>
         </Border>
 
-        <!-- Row 2: Persistent bottom command bar -->
-        <Border x:Name="BottomBar" Grid.Row="2" Height="70" Background="#1A1A1A" Visibility="Collapsed">
+        <!-- Row 1: Persistent bottom command bar -->
+        <Border x:Name="BottomBar" Grid.Row="1" Height="70" Background="#1A1A1A" Visibility="Collapsed">
             <Border.RenderTransform>
                 <TranslateTransform x:Name="BottomBarTranslate" Y="0"/>
             </Border.RenderTransform>
@@ -99,50 +98,6 @@
                     </StackPanel>
                 </Button>
             </Grid>
-        </Border>
-
-        <!-- Row 0: Invisible hover trigger — occupies the full 40px pull-tab zone so MouseEnter fires -->
-        <Border x:Name="MouseHotZone"
-                Grid.Row="0"
-                Width="180" Height="40"
-                HorizontalAlignment="Center"
-                Background="Transparent"
-                IsHitTestVisible="True"
-                MouseEnter="MouseHotZone_MouseEnter"
-                Panel.ZIndex="99"/>
-
-        <!-- Row 0: Mouse pull-down trigger tab — slides in from above, lives entirely in Row 0 (no airspace issue) -->
-        <Border x:Name="MousePullTab"
-                Grid.Row="0"
-                Width="180" Height="40"
-                VerticalAlignment="Top"
-                HorizontalAlignment="Center"
-                Background="#CC1A1A1A"
-                CornerRadius="0,0,10,10"
-                Cursor="Hand"
-                IsHitTestVisible="True"
-                MouseEnter="MousePullTab_MouseEnter"
-                MouseLeave="MousePullTab_MouseLeave"
-                MouseLeftButtonUp="MousePullTab_Click"
-                Panel.ZIndex="100">
-            <Border.RenderTransform>
-                <TranslateTransform x:Name="MousePullTabTranslate" Y="-40"/>
-            </Border.RenderTransform>
-            <Border.Effect>
-                <DropShadowEffect ShadowDepth="3" BlurRadius="8" Opacity="0.5" Direction="270"/>
-            </Border.Effect>
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
-                <!-- Three horizontal lines (hamburger / pull indicator) -->
-                <Viewbox Width="22" Height="22" Margin="0,0,6,0">
-                    <Canvas Width="24" Height="24">
-                        <Rectangle Canvas.Left="2" Canvas.Top="5"  Width="20" Height="2.5" RadiusX="1" RadiusY="1" Fill="White"/>
-                        <Rectangle Canvas.Left="2" Canvas.Top="11" Width="20" Height="2.5" RadiusX="1" RadiusY="1" Fill="White"/>
-                        <Rectangle Canvas.Left="2" Canvas.Top="17" Width="20" Height="2.5" RadiusX="1" RadiusY="1" Fill="White"/>
-                    </Canvas>
-                </Viewbox>
-                <TextBlock Text="Menu" Foreground="White" FontFamily="Segoe UI"
-                           FontSize="15" VerticalAlignment="Center"/>
-            </StackPanel>
         </Border>
     </Grid>
 </Window>
