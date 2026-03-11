@@ -7,8 +7,14 @@ using System.Windows.Forms;
 using System.IO;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Windows.Controls;
+using System.Windows.Interop;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Threading;
 using log4net;
 using log4net.Config;
+using BrowserHost.Services;
 
 namespace BrowserHost
 {
@@ -36,7 +42,32 @@ namespace BrowserHost
         private string initialUrl = string.Empty;
         private DateTime lastPullRequestUtc = DateTime.MinValue;
         private volatile bool confirmDialogOpen = false;
-        private DateTime lastKeyboardLaunchUtc = DateTime.MinValue;
+
+        // Touch keyboard settings (populated from per-screen config JSON written by Launcher)
+        private bool _enableOskFallback = false;       // allow osk.exe drop if touch keyboard unavailable
+        private int _keyboardAnimationMs = 200;        // animation duration for WebView margin adjustment (from uisettings.json)
+        private int _keyboardPollIntervalMs = 150;     // keyboard rect poll interval ms (from uisettings.json)
+        private bool _kioskTopmost = true;             // desired Topmost state when keyboard is not open
+
+        // Bottom bar settings
+        private bool _autoHideBottomBar = false;       // true = bar slides in/out on demand
+        private bool _bottomBarEnabled = true;         // per-screen kill switch
+        private bool _barAnimating = false;            // guard against overlapping animations
+        private int _bottomBarTimeoutSec = 5;          // auto-hide delay (from uisettings.json)
+
+        // Touch keyboard runtime state
+        private readonly TouchKeyboardService _touchKeyboard = new();
+        private DispatcherTimer? _keyboardPollTimer;
+        private Rect? _lastKeyboardRectForAnim;
+        private int _stableTickCount;
+
+        // Bottom bar runtime state
+        private DispatcherTimer? _autoHideTimer;
+        private bool _onExitUrl = false;             // tracks whether current URL matches exitUrl
+
+        // Exit settings
+        private bool _alwaysAllowExit = false;         // show Exit option in pull-down refresh menu
+        private string _exitConfirmPrompt = "Are you sure you want to Exit?"; // configurable prompt
 
         public MainWindow()
         {
@@ -56,8 +87,6 @@ namespace BrowserHost
             XmlConfigurator.Configure(new FileInfo(logConfig));
             InitializeComponent();
             Loaded += OnLoaded;
-            LocationChanged += (s, e) => { if (ExitPopup.IsOpen) PositionAndShowExitPopup(); };
-            SizeChanged += (s, e) => { if (ExitPopup.IsOpen) PositionAndShowExitPopup(); };
         }
 
         private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -89,6 +118,14 @@ namespace BrowserHost
                 devTools = root.TryGetProperty("DevTools", out var dt) && dt.GetBoolean();
                 enableOnScreenKeyboard = !root.TryGetProperty("EnableOnScreenKeyboard", out var eok) || eok.GetBoolean();
 
+                _enableOskFallback = root.TryGetProperty("EnableOskFallback", out var eof) && eof.GetBoolean();
+                _autoHideBottomBar = root.TryGetProperty("AutoHideBottomBar", out var ahb) && ahb.GetBoolean();
+                _bottomBarEnabled = !root.TryGetProperty("BottomBarEnabled", out var bbe) || bbe.GetBoolean();
+                _alwaysAllowExit = root.TryGetProperty("AlwaysAllowExit", out var aae) && aae.GetBoolean();
+
+                // Load animation/poll intervals from uisettings.json (BrowserHost dir), not from Launcher config
+                LoadUiSettings();
+
                 if (root.TryGetProperty("LocalStorage", out var localStorageElement))
                 {
                     var localStorageText = localStorageElement.GetRawText();
@@ -105,13 +142,26 @@ namespace BrowserHost
                     exitUrl = url;
                     log.Info($"ExitUrl not provided; using initial URL as exit target: {exitUrl}");
                 }
-                log.Info($"Monitor: {monitorIndex}, URL: {url}, AllowExit: {allowExit}, ExitUrl: {exitUrl}, LogConsoleMessages: {logConsoleMessages}, DevTools: {devTools}, LocalStorage: {(string.IsNullOrWhiteSpace(localStorageJson) ? "none" : "configured")}");
+                log.Info($"Monitor: {monitorIndex}, URL: {url}, AllowExit: {allowExit}, ExitUrl: {exitUrl}, LogConsoleMessages: {logConsoleMessages}, DevTools: {devTools}, LocalStorage: {(string.IsNullOrWhiteSpace(localStorageJson) ? "none" : "configured")}, EnableOskFallback: {_enableOskFallback}, AutoHideBottomBar: {_autoHideBottomBar}, BottomBarEnabled: {_bottomBarEnabled}, AlwaysAllowExit: {_alwaysAllowExit}, KeyboardAnimationMs: {_keyboardAnimationMs}, KeyboardPollIntervalMs: {_keyboardPollIntervalMs}, BottomBarTimeoutSec: {_bottomBarTimeoutSec}");
 
-                // Show/position exit button popup if allowed
-                if (allowExit)
+                // Show keyboard button only in Button mode
+                KeyboardButton.Visibility = enableOnScreenKeyboard ? Visibility.Visible : Visibility.Collapsed;
+
+                // Configure bottom bar initial state
+                if (!_bottomBarEnabled)
                 {
-                    log.Info("AllowExit=true, opening exit button popup immediately");
-                    PositionAndShowExitPopup();
+                    BottomBar.Visibility = Visibility.Collapsed;
+                    log.Info("BottomBar disabled for this screen");
+                }
+                else if (_autoHideBottomBar)
+                {
+                    BottomBar.Visibility = Visibility.Collapsed;
+                    log.Info("BottomBar in auto-hide mode, starts hidden");
+                }
+                else
+                {
+                    ShowBottomBar(animate: false);
+                    log.Info("BottomBar always visible");
                 }
 
                 // Read the resolved screen bounds that Launcher computed using
@@ -444,12 +494,11 @@ namespace BrowserHost
                     log.Warn($"Failed to inject custom pull-to-refresh script: {ex.Message}");
                 }
 
-                // Inject touch-aware editable-focus detection to trigger on-screen keyboard
+                // SHOW_OSK JS bridge removed — keyboard is always Button mode.
                 if (!enableOnScreenKeyboard)
                 {
-                    log.Info("On-screen keyboard disabled via config");
+                    log.Info("SHOW_OSK JS bridge skipped (EnableOnScreenKeyboard=false)");
                 }
-                else
                 try
                 {
                     await WebView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(@"
@@ -523,6 +572,56 @@ namespace BrowserHost
                     log.Warn($"Failed to inject touch keyboard bridge script: {ex.Message}");
                 }
 
+                // Inject text-input focus detection to show/reset auto-hide bottom bar
+                if (_autoHideBottomBar && _bottomBarEnabled)
+                {
+                    try
+                    {
+                        await WebView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(@"
+                            (function() {
+                                if (window.__textInputBridgeInstalled) return;
+                                window.__textInputBridgeInstalled = true;
+
+                                function isEditable(el) {
+                                    if (!el || el.disabled || el.readOnly) return false;
+                                    var tag = (el.tagName || '').toLowerCase();
+                                    if (tag === 'textarea') return true;
+                                    if (el.isContentEditable) return true;
+                                    var role = (el.getAttribute && el.getAttribute('role')) || '';
+                                    if (role.toLowerCase() === 'textbox') return true;
+                                    if (tag === 'input') {
+                                        var type = (el.type || 'text').toLowerCase();
+                                        return type === 'text' || type === 'search' || type === 'url' ||
+                                               type === 'tel' || type === 'email' || type === 'password' || type === 'number';
+                                    }
+                                    return false;
+                                }
+
+                                document.addEventListener('focusin', function(e) {
+                                    try {
+                                        if (isEditable(e.target))
+                                            window.chrome.webview.postMessage('TEXTINPUT_FOCUSED');
+                                    } catch(err) {}
+                                }, true);
+
+                                document.addEventListener('focusout', function(e) {
+                                    try {
+                                        setTimeout(function() {
+                                            if (!isEditable(document.activeElement))
+                                                window.chrome.webview.postMessage('TEXTINPUT_BLURRED');
+                                        }, 100);
+                                    } catch(err) {}
+                                }, true);
+                            })();
+                        ");
+                        log.Info("Injected text input focus bridge for auto-hide bottom bar");
+                    }
+                    catch (Exception ex)
+                    {
+                        log.Warn($"Failed to inject text input bridge: {ex.Message}");
+                    }
+                }
+
                 WebView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
                 WebView.CoreWebView2.Settings.AreDevToolsEnabled = false;
                 WebView.CoreWebView2.Settings.AreBrowserAcceleratorKeysEnabled = false;
@@ -559,7 +658,7 @@ namespace BrowserHost
                 log.Info($"Navigating to {url}");
                 
                 // Update exit button visibility before navigation so it shows immediately
-                UpdateExitPopup(url);
+                UpdateExitButton(url);
                 
                 WebView.CoreWebView2.Navigate(url);
             }
@@ -579,59 +678,59 @@ namespace BrowserHost
             catch { }
             // clear the flag after a short window
             _ = System.Threading.Tasks.Task.Run(async () => { await System.Threading.Tasks.Task.Delay(2000); navigationStartedRecently = false; });
-            UpdateExitPopup(targetUrl);
+            UpdateExitButton(targetUrl);
         }
 
         private void WebView_NavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
         {
             var currentUrl = WebView.CoreWebView2.Source.ToString();
-            UpdateExitPopup(currentUrl);
+            UpdateExitButton(currentUrl);
         }
 
         private void WebView_SourceChanged(object? sender, CoreWebView2SourceChangedEventArgs e)
         {
             var currentUrl = WebView.Source?.ToString() ?? string.Empty;
-            UpdateExitPopup(currentUrl);
+            UpdateExitButton(currentUrl);
         }
 
         private void WebView_GotFocus(object sender, RoutedEventArgs e)
         {
             // Reassert exit button visibility when WebView2 focus changes.
             var currentUrl = WebView?.CoreWebView2?.Source ?? WebView.Source?.ToString() ?? string.Empty;
-            UpdateExitPopup(currentUrl);
+            UpdateExitButton(currentUrl);
         }
 
-        private void UpdateExitPopup(string? currentUrl)
+        private void UpdateExitButton(string? currentUrl)
         {
             var url = currentUrl ?? string.Empty;
 
-            // Show the popup only if URL matches ExitUrl, regardless of AllowExit setting.
-            // AllowExit primarily controls initial popup positioning.
             if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url, UriKind.Absolute, out _))
             {
-                ExitPopup.IsOpen = false;
+                ExitButton.Visibility = Visibility.Collapsed;
                 return;
             }
 
             bool matches = UrlMatchesExit(url, exitUrl);
-            ExitPopup.IsOpen = matches;
-            if (matches)
-                PositionAndShowExitPopup();
-        }
+            bool wasOnExitUrl = _onExitUrl;
+            _onExitUrl = matches;
+            ExitButton.Visibility = matches ? Visibility.Visible : Visibility.Collapsed;
 
-        private void PositionAndShowExitPopup()
-        {
-            // Anchor button to the bottom-right corner with 5px border on all sides
-            // Button dimensions: 160px wide x 56px tall
-            // Keep 5px margin from all edges to prevent multi-monitor bleed
-            var x = this.ActualWidth - 5;   // Right edge with 5px border
-            var y = this.ActualHeight - 5;   // Bottom edge with 5px border
-            
-            log.Info($"PositionAndShowExitPopup: window size ({this.ActualWidth}x{this.ActualHeight}) -> popup offset ({x},{y})");
-            
-            ExitPopup.HorizontalOffset = x;
-            ExitPopup.VerticalOffset = y;
-            ExitPopup.IsOpen = true;
+            if (_autoHideBottomBar && _bottomBarEnabled)
+            {
+                if (matches)
+                {
+                    // Exit URL active: show bar and keep it permanently (stop auto-hide)
+                    ShowBottomBar();
+                    _autoHideTimer?.Stop();
+                }
+                else if (wasOnExitUrl)
+                {
+                    // Just left exit URL: start auto-hide countdown so the bar fades out
+                    ResetAutoHideTimer();
+                }
+                // Normal navigation (non-exit → non-exit): do not reset timer;
+                // the countdown set by TEXTINPUT_FOCUSED/BLURRED should run uninterrupted.
+            }
         }
 
         private static bool UrlMatchesExit(string current, string exit)
@@ -698,6 +797,7 @@ namespace BrowserHost
                                 confirmDialogOpen = true;
                                 using (var dlg = new RefreshConfirmWindow() { Owner = this })
                                 {
+                                    dlg.ShowExitButton = _alwaysAllowExit;
                                     dlg.ShowDialog();
                                     var choice = dlg.Choice;
                                     // reset the last pull time to avoid immediate duplicates
@@ -728,6 +828,24 @@ namespace BrowserHost
                                             log.Error($"Failed to navigate home after user choice: {nx.Message}");
                                         }
                                     }
+                                    else if (choice == RefreshChoice.Exit)
+                                    {
+                                        log.Info("User chose: Exit — showing confirmation");
+                                        using (var exitDlg = new ExitConfirmWindow() { Owner = this })
+                                        {
+                                            exitDlg.PromptText = _exitConfirmPrompt;
+                                            exitDlg.ShowDialog();
+                                            if (exitDlg.Confirmed)
+                                            {
+                                                log.Info("Exit confirmed — shutting down");
+                                                System.Windows.Application.Current.Shutdown();
+                                            }
+                                            else
+                                            {
+                                                log.Info("Exit cancelled by user");
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             catch (Exception ux)
@@ -747,14 +865,26 @@ namespace BrowserHost
                     return;
                 }
 
+                if (string.Equals(message, "TEXTINPUT_FOCUSED", StringComparison.Ordinal))
+                {
+                    if (_autoHideBottomBar && _bottomBarEnabled)
+                    {
+                        ShowBottomBar();
+                        ResetAutoHideTimer();
+                    }
+                    return;
+                }
+
+                if (string.Equals(message, "TEXTINPUT_BLURRED", StringComparison.Ordinal))
+                {
+                    if (_autoHideBottomBar && _bottomBarEnabled)
+                        ResetAutoHideTimer();
+                    return;
+                }
+
                 if (string.Equals(message, "SHOW_OSK", StringComparison.Ordinal))
                 {
-                    if (!enableOnScreenKeyboard)
-                    {
-                        return;
-                    }
-                    log.Info("SHOW_OSK requested from web content");
-                    ShowOnScreenKeyboard();
+                    // SHOW_OSK is no longer honoured — keyboard is always Button mode.
                     return;
                 }
 
@@ -767,6 +897,211 @@ namespace BrowserHost
             {
                 log.Error($"Error logging console message: {ex.Message}");
             }
+        }
+
+        private void ShowBottomBar(bool animate = true)
+        {
+            if (!_bottomBarEnabled) return;
+            if (BottomBar.Visibility == Visibility.Visible && BottomBarTranslate.Y < 1) return;
+            if (_barAnimating) return;
+
+            // Clear any held animation and set base value to off-screen start position
+            BottomBarTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+            BottomBarTranslate.Y = BottomBar.Height;
+            BottomBar.Visibility = Visibility.Visible;
+
+            if (!animate)
+            {
+                BottomBarTranslate.Y = 0;
+                return;
+            }
+
+            _barAnimating = true;
+            var anim = new DoubleAnimation(0, TimeSpan.FromMilliseconds(250))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+            };
+            anim.Completed += (s, e) =>
+            {
+                _barAnimating = false;
+                BottomBarTranslate.Y = 0;
+                BottomBarTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+            };
+            BottomBarTranslate.BeginAnimation(TranslateTransform.YProperty, anim);
+        }
+
+        private void HideBottomBar()
+        {
+            if (!_bottomBarEnabled || BottomBar.Visibility != Visibility.Visible) return;
+            if (_barAnimating) return;
+
+            BottomBarTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+            BottomBarTranslate.Y = 0;
+
+            _barAnimating = true;
+            var anim = new DoubleAnimation(BottomBar.Height, TimeSpan.FromMilliseconds(250))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
+            };
+            anim.Completed += (s, e) =>
+            {
+                _barAnimating = false;
+                BottomBarTranslate.Y = BottomBar.Height;
+                BottomBarTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+                BottomBar.Visibility = Visibility.Collapsed;
+            };
+            BottomBarTranslate.BeginAnimation(TranslateTransform.YProperty, anim);
+        }
+
+        private void ResetAutoHideTimer()
+        {
+            if (!_autoHideBottomBar || !_bottomBarEnabled) return;
+            if (_autoHideTimer == null)
+            {
+                _autoHideTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(_bottomBarTimeoutSec) };
+                _autoHideTimer.Tick += AutoHideTimer_Tick;
+            }
+            else
+            {
+                // Update interval in case uisettings were reloaded
+                _autoHideTimer.Interval = TimeSpan.FromSeconds(_bottomBarTimeoutSec);
+            }
+            _autoHideTimer.Stop();
+            _autoHideTimer.Start();
+        }
+
+        private void AutoHideTimer_Tick(object? sender, EventArgs e)
+        {
+            _autoHideTimer!.Stop();
+            // Keep bar visible while exit button is shown
+            if (ExitButton.Visibility == Visibility.Visible)
+            {
+                _autoHideTimer.Start();
+                return;
+            }
+            log.Info("Auto-hiding bottom bar after timeout");
+            HideBottomBar();
+        }
+
+        private void LoadUiSettings()
+        {
+            try
+            {
+                var path = Path.Combine(AppContext.BaseDirectory, "uisettings.json");
+                if (!File.Exists(path)) return;
+                var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
+                var root = doc.RootElement;
+                if (root.TryGetProperty("KeyboardAnimationMs", out var kams)) _keyboardAnimationMs = kams.GetInt32();
+                if (root.TryGetProperty("KeyboardPollIntervalMs", out var kpims)) _keyboardPollIntervalMs = kpims.GetInt32();
+                if (root.TryGetProperty("BottomBarTimeoutSec", out var bbts)) _bottomBarTimeoutSec = bbts.GetInt32();
+                if (root.TryGetProperty("ExitConfirmPrompt", out var ecp)) _exitConfirmPrompt = ecp.GetString() ?? _exitConfirmPrompt;
+                log.Info($"uisettings.json loaded: KeyboardAnimationMs={_keyboardAnimationMs}, KeyboardPollIntervalMs={_keyboardPollIntervalMs}, BottomBarTimeoutSec={_bottomBarTimeoutSec}");
+            }
+            catch (Exception ex)
+            {
+                log.Warn($"Failed to load uisettings.json: {ex.Message}");
+            }
+        }
+
+        private void KeyboardButton_Click(object sender, RoutedEventArgs e)
+        {
+            // Lower Topmost so the keyboard window can render above this window.
+            Topmost = false;
+            var hwnd = new WindowInteropHelper(this).Handle;
+
+            if (!_touchKeyboard.Toggle(hwnd) && _enableOskFallback)
+            {
+                log.Warn("Touch keyboard unavailable; using accessibility OSK fallback");
+                ShowAccessibilityOsk();
+            }
+
+            StartKeyboardPollTimer();
+        }
+
+        private void StartKeyboardPollTimer()
+        {
+            _stableTickCount = 0;
+            _lastKeyboardRectForAnim = null;
+
+            if (_keyboardPollTimer == null)
+            {
+                _keyboardPollTimer = new DispatcherTimer
+                {
+                    Interval = TimeSpan.FromMilliseconds(_keyboardPollIntervalMs)
+                };
+                _keyboardPollTimer.Tick += KeyboardPollTimer_Tick;
+            }
+
+            _keyboardPollTimer.Start();
+        }
+
+        private void KeyboardPollTimer_Tick(object? sender, EventArgs e)
+        {
+            var kbRect = _touchKeyboard.GetKeyboardRect();
+
+            if (kbRect == _lastKeyboardRectForAnim)
+            {
+                _stableTickCount++;
+                if (_stableTickCount >= 5)
+                {
+                    _keyboardPollTimer!.Stop();
+                    // Restore Topmost once keyboard is confirmed closed
+                    if (!_touchKeyboard.IsOpen)
+                    {
+                        Topmost = _kioskTopmost;
+                        log.Info("Keyboard closed; Topmost restored");
+                    }
+                    // Update button visual state
+                    UpdateKeyboardButtonState(_touchKeyboard.IsOpen);
+                }
+                return;
+            }
+
+            _stableTickCount = 0;
+            _lastKeyboardRectForAnim = kbRect;
+            UpdateKeyboardButtonState(kbRect.HasValue);
+            AnimateWebViewMargin(kbRect);
+        }
+
+        private void UpdateKeyboardButtonState(bool isOpen)
+        {
+            KeyboardButton.Background = isOpen
+                ? new SolidColorBrush(Color.FromRgb(0x21, 0x96, 0xF3))  // blue when open
+                : new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33)); // dark gray when closed
+            KeyboardButtonText.Text = isOpen ? "Keyboard ▲" : "Keyboard";
+        }
+
+        private void AnimateWebViewMargin(Rect? keyboardRect)
+        {
+            var dpiSource = PresentationSource.FromVisual(this);
+            var dpiY = dpiSource?.CompositionTarget?.TransformToDevice.M22 ?? 1.0;
+
+            double newBottomMargin = 0;
+
+            if (keyboardRect.HasValue)
+            {
+                // Window boundaries in screen pixels
+                var windowBottomPx = (Top + ActualHeight) * dpiY;
+                var barHeightPx = BottomBar.ActualHeight * dpiY;
+                var webViewBottomPx = windowBottomPx - barHeightPx;
+
+                var overlapPx = webViewBottomPx - keyboardRect.Value.Top;
+                if (overlapPx > 0)
+                    newBottomMargin = overlapPx / dpiY;
+            }
+
+            var currentMargin = WebViewContainer.Margin;
+            if (Math.Abs(currentMargin.Bottom - newBottomMargin) < 1)
+                return;
+
+            var animation = new ThicknessAnimation
+            {
+                From = currentMargin,
+                To = new Thickness(0, 0, 0, newBottomMargin),
+                Duration = TimeSpan.FromMilliseconds(_keyboardAnimationMs),
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+            };
+            WebViewContainer.BeginAnimation(Border.MarginProperty, animation);
         }
 
         private void ExitButton_Click(object sender, RoutedEventArgs e)
@@ -859,103 +1194,32 @@ namespace BrowserHost
             }
         }
 
-        private void ShowOnScreenKeyboard()
+        /// <summary>
+        /// Legacy osk.exe accessibility fallback. Only called when EnableOskFallback=true and
+        /// the Win11 touch keyboard (TouchKeyboardService) is unavailable.
+        /// </summary>
+        private void ShowAccessibilityOsk()
         {
             try
             {
-                var now = DateTime.UtcNow;
-                if ((now - lastKeyboardLaunchUtc) < TimeSpan.FromMilliseconds(700))
+                if (TryRestoreOskWindow())
                 {
+                    log.Info("Restored existing OSK window (accessibility fallback)");
                     return;
                 }
-                lastKeyboardLaunchUtc = now;
 
-                // BrowserHost is configured Topmost; lower it so OSK windows can appear above it.
-                try
+                // Kill stale instances then relaunch
+                foreach (var p in Process.GetProcessesByName("osk"))
                 {
-                    Dispatcher.Invoke(() =>
-                    {
-                        if (Topmost)
-                        {
-                            Topmost = false;
-                            log.Info("Temporarily disabled Topmost to allow keyboard visibility");
-                        }
-                    });
-                }
-                catch { }
-
-                var tabTipPath = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFiles),
-                    "microsoft shared",
-                    "ink",
-                    "TabTip.exe");
-
-                if (!File.Exists(tabTipPath))
-                {
-                    tabTipPath = @"C:\Program Files\Common Files\Microsoft Shared\ink\TabTip.exe";
+                    try { p.Kill(true); p.WaitForExit(1000); } catch { }
                 }
 
-                var started = false;
-                if (File.Exists(tabTipPath))
-                {
-                    try
-                    {
-                        Process.Start(new ProcessStartInfo
-                        {
-                            FileName = tabTipPath,
-                            UseShellExecute = true
-                        });
-                        started = true;
-                        log.Info("Launched touch keyboard (TabTip.exe)");
-                    }
-                    catch (Exception tabTipEx)
-                    {
-                        log.Warn($"Failed to launch TabTip.exe: {tabTipEx.Message}");
-                    }
-                }
-
-                // Fallback only if TabTip is unavailable
-                if (!started)
-                {
-                    try
-                    {
-                        EnsureOskVisible(false);
-                    }
-                    catch (Exception oskEx)
-                    {
-                        log.Warn($"Failed to launch osk.exe fallback: {oskEx.Message}");
-                    }
-                }
-                else
-                {
-                    // TabTip can start without showing UI on some systems; enforce OSK fallback unless already running.
-                    _ = System.Threading.Tasks.Task.Run(async () =>
-                    {
-                        await System.Threading.Tasks.Task.Delay(500);
-                        try
-                        {
-                            var oskRunning = Process.GetProcessesByName("osk").Length > 0;
-                            if (!oskRunning)
-                            {
-                                EnsureOskVisible(false);
-                                log.Info("Launched enforced fallback keyboard path after TabTip");
-                            }
-                            else
-                            {
-                                EnsureOskVisible(true);
-                                log.Info("OSK already running; forced relaunch path executed");
-                            }
-                        }
-                        catch (Exception delayedFallbackEx)
-                        {
-                            log.Warn($"Delayed fallback to osk.exe failed: {delayedFallbackEx.Message}");
-                        }
-                    });
-                }
+                Process.Start(new ProcessStartInfo { FileName = "osk.exe", UseShellExecute = true });
+                log.Info("Launched accessibility OSK fallback (osk.exe)");
             }
             catch (Exception ex)
             {
-                log.Warn($"Failed to launch on-screen keyboard: {ex.Message}");
+                log.Warn($"ShowAccessibilityOsk failed: {ex.Message}");
             }
         }
 
@@ -964,59 +1228,12 @@ namespace BrowserHost
             try
             {
                 var oskWindow = FindWindow("OSKMainClass", null);
-                if (oskWindow == IntPtr.Zero)
-                {
-                    return false;
-                }
-
+                if (oskWindow == IntPtr.Zero) return false;
                 try { ShowWindow(oskWindow, SW_RESTORE); } catch { }
                 try { ShowWindow(oskWindow, SW_SHOW); } catch { }
                 return true;
             }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private bool EnsureOskVisible(bool forceRelaunchIfRunning)
-        {
-            try
-            {
-                if (!forceRelaunchIfRunning && TryRestoreOskWindow())
-                {
-                    log.Info("Restored existing OSK window");
-                    return true;
-                }
-
-                var oskProcesses = Process.GetProcessesByName("osk");
-                if (oskProcesses.Length > 0)
-                {
-                    foreach (var process in oskProcesses)
-                    {
-                        try
-                        {
-                            process.Kill(true);
-                            process.WaitForExit(1000);
-                        }
-                        catch { }
-                    }
-                    log.Info("Terminated stale OSK process instances before relaunch");
-                }
-
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = "osk.exe",
-                    UseShellExecute = true
-                });
-                log.Info("Launched fallback keyboard (osk.exe)");
-                return true;
-            }
-            catch (Exception ex)
-            {
-                log.Warn($"EnsureOskVisible failed: {ex.Message}");
-                return false;
-            }
+            catch { return false; }
         }
     }
 }
