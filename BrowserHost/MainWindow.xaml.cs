@@ -29,12 +29,6 @@ namespace BrowserHost
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
-        [DllImport("user32.dll")]
-        private static extern bool GetCursorPos(out POINT pt);
-
-        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
-        private struct POINT { public int X; public int Y; }
-
         private static readonly ILog log = LogManager.GetLogger(typeof(MainWindow));
         private bool allowExit;
         private string exitUrl = string.Empty;
@@ -78,7 +72,6 @@ namespace BrowserHost
         // Mouse pull-tab state
         private bool _pullTabVisible = false;          // true while tab is slid into view
         private DispatcherTimer? _pullTabHideTimer;    // auto-retract after idle
-        private DispatcherTimer? _mouseHotZoneTimer;   // polls cursor pos (WebView2 swallows MouseMove)
 
         public MainWindow()
         {
@@ -672,10 +665,6 @@ namespace BrowserHost
                 UpdateExitButton(url);
                 
                 WebView.CoreWebView2.Navigate(url);
-
-                // Start polling cursor position for mouse pull-tab hot zone.
-                // Cannot use WPF MouseMove because WebView2 (HwndHost) swallows all mouse events.
-                StartMouseHotZonePolling();
             }
             catch (Exception ex)
             {
@@ -1047,20 +1036,9 @@ namespace BrowserHost
 
         // ── Mouse pull-tab ────────────────────────────────────────────────────────
 
-        private void StartMouseHotZonePolling()
+        private void MouseHotZone_MouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
         {
-            _mouseHotZoneTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
-            _mouseHotZoneTimer.Tick += (s, e) =>
-            {
-                if (!GetCursorPos(out POINT pt)) return;
-                var pos = PointFromScreen(new System.Windows.Point(pt.X, pt.Y));
-                double centerLeft  = (ActualWidth - MousePullTab.Width) / 2;
-                double centerRight = centerLeft + MousePullTab.Width;
-                bool inHotZone = pos.Y <= 20 && pos.X >= centerLeft && pos.X <= centerRight;
-                if (inHotZone && !_pullTabVisible)
-                    ShowMousePullTab();
-            };
-            _mouseHotZoneTimer.Start();
+            ShowMousePullTab();
         }
 
         private void MousePullTab_MouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
