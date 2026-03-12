@@ -31,15 +31,19 @@ A .NET application for managing multiple browser instances across monitors with 
 
 ### Quick Menu (swipe or mouse pull-down tab)
 
-![Pull-to-Refresh Demo](docs/gifs/pull-to-refresh.gif)
+![Quick Menu Mouse Click Demo](demos/mouse_click_quick_menu_demo.gif)
 
 ### Page Navigation / Home Flow
 
-![Page Navigation Demo](BrowserHost/swipe_navigation_demo.gif)
+![Swipe Navigation Demo](demos/swipe_navigation_demo.gif)
+
+### New Bottom Bar
+
+![New Bottom Bar Demo](demos/new_bottom_bar_demo.gif)
 
 ### Win11 Touch Keyboard Button
 
-![On-Screen Keyboard Demo](BrowserHost/osk_demo.gif)
+![New Keyboard Demo](demos/new_keyboard_demo.gif)
 
 ## Requirements
 
