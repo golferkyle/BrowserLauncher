@@ -74,6 +74,7 @@ namespace BrowserHost
         // Exit settings
         private bool _alwaysAllowExit = false;         // show Exit option in pull-down refresh menu
         private string _exitConfirmPrompt = "Are you sure you want to Exit?"; // configurable prompt
+        private int _zoom = 100;                       // per-screen WebView2 zoom level (100 = 100%)
 
         // Mouse pull-tab state
         private PullTabWindow? _pullTabWindow;          // overlay window (separate HWND, renders above WebView2)
@@ -134,6 +135,7 @@ namespace BrowserHost
                 _autoHideBottomBar = root.TryGetProperty("AutoHideBottomBar", out var ahb) && ahb.GetBoolean();
                 _bottomBarEnabled = !root.TryGetProperty("BottomBarEnabled", out var bbe) || bbe.GetBoolean();
                 _alwaysAllowExit = root.TryGetProperty("AlwaysAllowExit", out var aae) && aae.GetBoolean();
+                _zoom = root.TryGetProperty("Zoom", out var zf) ? zf.GetInt32() : 100;
 
                 // Load animation/poll intervals from uisettings.json (BrowserHost dir), not from Launcher config
                 LoadUiSettings();
@@ -154,7 +156,7 @@ namespace BrowserHost
                     exitUrl = url;
                     log.Info($"ExitUrl not provided; using initial URL as exit target: {exitUrl}");
                 }
-                log.Info($"Monitor: {monitorIndex}, URL: {url}, AllowExit: {allowExit}, ExitUrl: {exitUrl}, LogConsoleMessages: {logConsoleMessages}, DevTools: {devTools}, LocalStorage: {(string.IsNullOrWhiteSpace(localStorageJson) ? "none" : "configured")}, EnableOskFallback: {_enableOskFallback}, AutoHideBottomBar: {_autoHideBottomBar}, BottomBarEnabled: {_bottomBarEnabled}, AlwaysAllowExit: {_alwaysAllowExit}, KeyboardAnimationMs: {_keyboardAnimationMs}, KeyboardPollIntervalMs: {_keyboardPollIntervalMs}, BottomBarTimeoutSec: {_bottomBarTimeoutSec}");
+                log.Info($"Monitor: {monitorIndex}, URL: {url}, AllowExit: {allowExit}, ExitUrl: {exitUrl}, LogConsoleMessages: {logConsoleMessages}, DevTools: {devTools}, LocalStorage: {(string.IsNullOrWhiteSpace(localStorageJson) ? "none" : "configured")}, Zoom: {_zoom}, EnableOskFallback: {_enableOskFallback}, AutoHideBottomBar: {_autoHideBottomBar}, BottomBarEnabled: {_bottomBarEnabled}, AlwaysAllowExit: {_alwaysAllowExit}, KeyboardAnimationMs: {_keyboardAnimationMs}, KeyboardPollIntervalMs: {_keyboardPollIntervalMs}, BottomBarTimeoutSec: {_bottomBarTimeoutSec}");
 
                 // Show keyboard button only in Button mode
                 KeyboardButton.Visibility = enableOnScreenKeyboard ? Visibility.Visible : Visibility.Collapsed;
@@ -264,6 +266,12 @@ namespace BrowserHost
                 var webView2Env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
                 await WebView.EnsureCoreWebView2Async(webView2Env);
                 log.Info("WebView2 ensured with per-monitor profile");
+
+                if (_zoom != 100)
+                {
+                    WebView.ZoomFactor = _zoom / 100.0;
+                    log.Info($"Zoom set to {_zoom}% ({_zoom / 100.0})");
+                }
 
                 WebView.CoreWebView2.NavigationStarting += WebView_NavigationStarting;
                 WebView.CoreWebView2.NavigationCompleted += WebView_NavigationCompleted;
