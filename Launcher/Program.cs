@@ -108,7 +108,7 @@ foreach (var screen in screens)
 
     var physicalScreen = physicalScreens[positionalIndex];
     log.Info($"Mapping MonitorIndex {positionalIndex} -> {physicalScreen.DeviceName} at {physicalScreen.Bounds}");
-    log.Info($"  URL: {screen.Url}, AllowExit: {screen.AllowExit}, ExitUrl: {screen.ExitUrl}, LogConsoleMessages: {screen.LogConsoleMessages}, DevTools: {screen.DevTools}");
+    log.Info($"  URL: {screen.Url}, AllowExit: {screen.AllowExit}, ExitUrl: {screen.ExitUrl}, LogConsoleMessages: {screen.LogConsoleMessages}, DevTools: {screen.DevTools}, Zoom: {screen.Zoom}");
 
     // Write the raw JSON element for this screen to a temp file.
     // This preserves the full LocalStorage structure without any CLI escaping issues.
@@ -285,4 +285,4 @@ static void CleanupLogs(string logDirectory, int retentionDays, ILog log)
     }
 }
 
-record ScreenConfig(int MonitorIndex, string Url, bool AllowExit, string ExitUrl, bool LogConsoleMessages, bool DevTools, bool RequireAllMonitors = false);
+record ScreenConfig(int MonitorIndex, string Url, bool AllowExit, string ExitUrl, bool LogConsoleMessages, bool DevTools, bool RequireAllMonitors = false, int Zoom = 100);
