@@ -75,6 +75,7 @@ Edit `appsettings.json` to configure screens:
       "LogConsoleMessages": true,
       "DevTools": false,
       "BottomBarEnabled": true,
+      "Zoom": 100,
       "LocalStorage": {
         "appState": {
           "userId": "user123"
@@ -90,6 +91,7 @@ Edit `appsettings.json` to configure screens:
       "LogConsoleMessages": true,
       "DevTools": false,
       "BottomBarEnabled": true,
+      "Zoom": 100,
       "LocalStorage": {}
     }
   ]
@@ -121,6 +123,7 @@ Edit `appsettings.json` to configure screens:
 - **LogConsoleMessages**: Log browser console messages to log4net (default `true`)
 - **DevTools**: Open DevTools window on startup (default `false`)
 - **BottomBarEnabled**: Per-screen kill switch for the bottom bar; set `false` to hide the bar on a specific screen regardless of the global `AutoHideBottomBar` setting (default `true`)
+- **Zoom**: Per-screen zoom level. Integer value 0-100+.
 - **LocalStorage**: Key/value pairs to inject into browser localStorage (supports nested objects)
 
 ### UI Settings (`uisettings.json`)
